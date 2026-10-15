@@ -1,0 +1,98 @@
+# Python 服务发版模板（复制到新仓库时：把 tf-agent 全部替换为仓库名，如 tf-agent）
+# 制品为 Docker 镜像；Release 仅输出变更说明，无附件
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    env:
+      APP: tf-agent
+      IMAGE: ghcr.io/take-fish/tf-agent
+      TF_DEPLOY_PAT: ${{ secrets.TF_DEPLOY_PAT }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute next version
+        id: version
+        run: |
+          git fetch --tags --force -q
+          LATEST=$(git tag --merged HEAD -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          if [ -z "$LATEST" ]; then
+            NEXT="v0.1.0"
+          else
+            IFS='.' read -r MA MI PA <<< "${LATEST#v}"
+            NEXT="v${MA}.${MI}.$((PA+1))"
+          fi
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "下一个版本：$NEXT（上一个：${LATEST:-无}）"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+
+      - name: Bump tf-deploy submodule pointer
+        if: env.TF_DEPLOY_PAT != ''
+        env:
+          PAT: ${{ env.TF_DEPLOY_PAT }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${PAT}@github.com/take-fish/tf-deploy.git" /tmp/tf-deploy
+          cd /tmp/tf-deploy
+          git submodule update --init --depth 1 "${APP}"
+          cd "${APP}"
+          git fetch --depth 1 origin tag "${VERSION}"
+          git checkout "${VERSION}"
+          cd ..
+          git add "${APP}"
+          git -c user.name="ci-bot" -c user.email="ci-bot@users.noreply.github.com" commit -m "chore: bump ${APP} to ${VERSION}"
+          for i in 1 2 3; do
+            git pull --rebase origin master && git push origin master && break || sleep 5
+          done
+
+      - name: Skip notice (no PAT)
+        if: env.TF_DEPLOY_PAT == ''
+        run: echo "TF_DEPLOY_PAT 未配置，跳过 tf-deploy submodule bump（配置该 secret 后自动启用）" >> "$GITHUB_STEP_SUMMARY"

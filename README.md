@@ -23,6 +23,6 @@ docker build -t tf-agent .
 
 ## 分支模型
 
-- `master`：保护分支，只接受 PR（CI 必须通过），合并后自动发版
-- `test`：联调分支，可直接推送
-- 开发流：`feature/*` → PR 到 `test` → 联调 → PR 到 `master` → 自动发版
+- `master`：保护分支，只接受 PR（CI 必须通过，squash 合并），合并后自动发版
+- `test`：联调分支，开发分支直接合入（不走 PR），可直接推送
+- 开发流：`feature/*` 开发 → 直接合入 `test` 联调 → 验证 OK 后从开发分支开 PR 合 `master` → 自动发版

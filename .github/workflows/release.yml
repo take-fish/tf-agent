@@ -82,6 +82,8 @@ jobs:
         run: |
           git clone --depth 1 "https://x-access-token:${PAT}@github.com/take-fish/tf-deploy.git" /tmp/tf-deploy
           cd /tmp/tf-deploy
+          # .gitmodules 中的子模块是 SSH 地址，CI 无 SSH key：改写为 HTTPS + PAT
+          git config --global url."https://x-access-token:${PAT}@github.com/".insteadOf "git@github.com:"
           git submodule update --init --depth 1 "${APP}"
           cd "${APP}"
           git fetch --depth 1 origin tag "${VERSION}"

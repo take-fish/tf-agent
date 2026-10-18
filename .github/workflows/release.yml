@@ -90,10 +90,14 @@ jobs:
           git checkout "${VERSION}"
           cd ..
           git add "${APP}"
-          git -c user.name="ci-bot" -c user.email="ci-bot@users.noreply.github.com" commit -m "chore: bump ${APP} to ${VERSION}"
-          for i in 1 2 3; do
-            git pull --rebase origin master && git push origin master && break || sleep 5
-          done
+          if git diff --cached --quiet; then
+            echo "子模块指针已是最新（${VERSION}），跳过提交"
+          else
+            git -c user.name="ci-bot" -c user.email="ci-bot@users.noreply.github.com" commit -m "chore: bump ${APP} to ${VERSION}"
+            for i in 1 2 3; do
+              git pull --rebase origin master && git push origin master && break || sleep 5
+            done
+          fi
 
       - name: Skip notice (no PAT)
         if: env.TF_DEPLOY_PAT == ''

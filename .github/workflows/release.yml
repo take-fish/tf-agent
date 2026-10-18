@@ -97,6 +97,8 @@ jobs:
             for i in 1 2 3; do
               git pull --rebase origin master && git push origin master && break || sleep 5
             done
+            # 最终确认：重试耗尽仍未推送成功时让步骤失败（避免静默吞错）
+            git push origin master
           fi
 
       - name: Skip notice (no PAT)

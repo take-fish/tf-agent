@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -22,7 +23,10 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _client: QdrantClient | None = None
-_collection_ready = False
+_ready_at: float = 0.0
+# 集合存在性缓存：集合可能被外部删掉（运维重建、误删），
+# 缓存久了会把 404 一直带下去，所以只缓存 30 秒，并在失败时立刻失效重试。
+_READY_TTL = 30.0
 
 
 def get_client() -> QdrantClient:
@@ -36,9 +40,14 @@ def get_client() -> QdrantClient:
     return _client
 
 
+def reset_collection_cache() -> None:
+    global _ready_at
+    _ready_at = 0.0
+
+
 def ensure_collection(dim: int | None = None) -> None:
-    global _collection_ready
-    if _collection_ready:
+    global _ready_at
+    if time.monotonic() - _ready_at < _READY_TTL:
         return
     client = get_client()
     name = settings.qdrant_collection
@@ -49,11 +58,22 @@ def ensure_collection(dim: int | None = None) -> None:
             vectors_config=VectorParams(size=dim or settings.embed_dim, distance=Distance.COSINE),
         )
         logger.info("创建向量集合 %s (dim=%s)", name, dim or settings.embed_dim)
-    _collection_ready = True
+    _ready_at = time.monotonic()
 
 
 def point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"fm-kb/{chunk_id}"))
+
+
+def _retry_once(func, *args, **kwargs):
+    """集合被外部删掉时，第一次调用会 404；失效缓存、确保集合存在后重试一次。"""
+    ensure_collection()
+    try:
+        return func(*args, **kwargs)
+    except Exception:
+        reset_collection_cache()
+        ensure_collection()
+        return func(*args, **kwargs)
 
 
 def upsert_chunks(
@@ -63,7 +83,6 @@ def upsert_chunks(
     chunks: list[dict[str, Any]],
     vectors: list[list[float]],
 ) -> None:
-    ensure_collection(len(vectors[0]) if vectors else None)
     points = [
         PointStruct(
             id=point_id(chunk["id"]),
@@ -78,40 +97,52 @@ def upsert_chunks(
         )
         for chunk, vector in zip(chunks, vectors, strict=False)
     ]
-    if points:
-        get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
+    if not points:
+        return
+    _retry_once(
+        lambda: get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
+    )
 
 
 def delete_doc(doc_id: str) -> None:
-    get_client().delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]),
-        wait=True,
-    )
+    _delete(Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]))
 
 
 def delete_kb(kb_id: str) -> None:
-    get_client().delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
-        wait=True,
-    )
+    _delete(Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]))
+
+
+def _delete(points_filter: Filter) -> None:
+    """集合本身不存在时删除是无意义的，按成功处理（重启后重建集合即可）。"""
+    try:
+        _retry_once(
+            lambda: get_client().delete(
+                collection_name=settings.qdrant_collection,
+                points_selector=points_filter,
+                wait=True,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("删除向量失败（忽略）：%s", exc)
 
 
 def search(vector: list[float], kb_ids: list[str] | None, top_k: int) -> list[dict[str, Any]]:
-    ensure_collection(len(vector) if vector else None)
     must = []
     if kb_ids:
         must.append(FieldCondition(key="kb_id", match=MatchAny(any=kb_ids)))
     query_filter = Filter(must=must) if must else None
 
-    hits = get_client().query_points(
-        collection_name=settings.qdrant_collection,
-        query=vector,
-        query_filter=query_filter,
-        limit=top_k,
-        with_payload=True,
-    ).points
+    hits = _retry_once(
+        lambda: get_client()
+        .query_points(
+            collection_name=settings.qdrant_collection,
+            query=vector,
+            query_filter=query_filter,
+            limit=top_k,
+            with_payload=True,
+        )
+        .points
+    )
     return [
         {
             "doc_id": hit.payload.get("doc_id", ""),

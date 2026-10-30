@@ -117,6 +117,20 @@ class Settings:
     loki_service_label: str = field(default_factory=lambda: _env("LOKI_SERVICE_LABEL", "service"))
     nacos_url: str = field(default_factory=lambda: _env("NACOS_URL", "http://10.28.13.112:8848"))
     nacos_namespace: str = field(default_factory=lambda: _env("NACOS_NAMESPACE", "fm-prod"))
+    # 配置中心：拉 tf-agent.yaml 覆盖场景/限流/知识库参数
+    nacos_enabled: bool = field(default_factory=lambda: _bool("NACOS_ENABLED", True))
+    nacos_config_data_id: str = field(default_factory=lambda: _env("NACOS_CONFIG_DATA_ID", "tf-agent.yaml"))
+    nacos_config_group: str = field(default_factory=lambda: _env("NACOS_CONFIG_GROUP", "FM"))
+    nacos_refresh_seconds: int = field(default_factory=lambda: _int("NACOS_REFRESH_SECONDS", 60))
+    # 服务注册：让网关 service=tf-agent 的发现能命中本实例
+    nacos_register: bool = field(default_factory=lambda: _bool("NACOS_REGISTER", True))
+    nacos_service_name: str = field(default_factory=lambda: _env("NACOS_SERVICE_NAME", "tf-agent"))
+    # 上报给 Nacos 的 IP/端口；容器里必须显式给宿主机可达 IP
+    nacos_instance_ip: str = field(default_factory=lambda: _env("NACOS_INSTANCE_IP"))
+    nacos_port: int = field(default_factory=lambda: _int("FM_AGENT_PORT", 8201))
+    # Nacos 2.x 开启鉴权时需要；未开启留空
+    nacos_username: str = field(default_factory=lambda: _env("NACOS_USERNAME"))
+    nacos_password: str = field(default_factory=lambda: _env("NACOS_PASSWORD"))
     # 静态服务表：Nacos 不可用时的兜底，{"tf-game": "http://10.28.13.112:8082"}
     services_map: dict = field(default_factory=lambda: _json_dict("FM_AGENT_SERVICES"))
 

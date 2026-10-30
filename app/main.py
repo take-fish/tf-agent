@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 import anyio.to_thread
 from fastapi import FastAPI
 
-from app import llm
+from app import llm, nacos
 from app.api import admin, chat, confirm, kb, meta
 from app.config import settings
 from app.db import init_db
@@ -34,8 +34,18 @@ async def lifespan(_: FastAPI):
     init_db()
     # 嵌入模型预热放后台，不阻塞端口监听
     asyncio.create_task(anyio.to_thread.run_sync(embedder.warmup))
+    # Nacos：拉配置 + 注册实例；连不上就降级（用默认参数、网关走静态兜底）
+    nacos_runtime = nacos.manager()
+    try:
+        await nacos_runtime.start()
+    except Exception as exc:  # noqa: BLE001 - 配置中心不可用不应阻止服务启动
+        logger.warning("Nacos 初始化失败，使用默认参数继续启动：%s", exc)
     logger.info("tf-agent 启动完成（dev_mode=%s, max_concurrency=%s）", settings.dev_mode, settings.max_concurrency)
     yield
+    try:
+        await nacos_runtime.stop()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nacos 注销异常：%s", exc)
     await llm.close()
 
 

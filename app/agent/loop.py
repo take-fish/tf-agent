@@ -11,7 +11,7 @@ from typing import Any
 
 import anyio.to_thread
 
-from app import audit
+from app import audit, nacos
 from app.agent import confirm_store, context, prompt
 from app.config import settings
 from app.llm import LLMError, stream_round
@@ -64,9 +64,9 @@ async def stream_agent(
     system = prompt.build_system_prompt(scene, env=env, user_name=identity.display_name)
     messages = context.build_round_messages(
         system,
-        context.trim_history(history, settings.history_limit),
+        context.trim_history(history, nacos.limit("history-limit", settings.history_limit)),
         user_text,
-        settings.max_input_chars,
+        nacos.limit("max-input-chars", settings.max_input_chars),
     )
 
     yield {"type": "start", "trace_id": trace_id, "scene": scene.name, "env": env, "tools": [t.name for t in tools]}
@@ -74,8 +74,9 @@ async def stream_agent(
     final_text = ""
     usage: dict[str, Any] = {}
     deadline = time.monotonic() + settings.request_timeout
+    max_rounds = nacos.limit("max-tool-rounds", settings.max_tool_rounds)
 
-    for round_index in range(settings.max_tool_rounds):
+    for round_index in range(max_rounds):
         if time.monotonic() > deadline:
             yield {"type": "error", "message": "本次请求超时，请缩小问题范围后重试"}
             return

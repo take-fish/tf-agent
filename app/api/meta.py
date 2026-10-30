@@ -8,7 +8,7 @@ import anyio.to_thread
 from fastapi import APIRouter, Depends, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 
-from app import llm
+from app import llm, nacos
 from app.agent import prompt
 from app.auth import Identity, get_identity
 from app.config import settings
@@ -39,8 +39,9 @@ async def scenes():
     return {
         "code": 0,
         "data": [
-            {"name": s.name, "title": s.title, "tools": s.tools} for s in prompt.SCENES.values()
+            {"name": s.name, "title": s.title, "tools": s.tools} for s in prompt.scenes().values()
         ],
+        "source": nacos.status().config_source,
     }
 
 
@@ -64,6 +65,15 @@ async def status():
             "qdrant": {"ok": qdrant_ok, "url": settings.qdrant_url},
             "tools": len(registry.all_specs()),
             "embedding": {"model": settings.embed_model, "dim": settings.embed_dim},
+            "nacos": {
+                "enabled": settings.nacos_enabled,
+                "config_ok": nacos.status().config_ok,
+                "config_source": nacos.status().config_source,
+                "registered": nacos.status().registered,
+                "service": settings.nacos_service_name,
+                "instance": f"{nacos.manager().ip}:{settings.nacos_port}",
+                "error": nacos.status().last_error,
+            },
         },
     }
 

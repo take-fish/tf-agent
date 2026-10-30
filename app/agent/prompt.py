@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app import nacos
+
 SYSTEM_PROMPT = """你是 FishMatrix 内网智能运维助手，服务对象是研发和运维同学。
 
 你可以做的事（通过工具）：
@@ -64,8 +66,40 @@ SCENES: dict[str, Scene] = {
 DEFAULT_SCENE = "ops"
 
 
+def scenes() -> dict[str, Scene]:
+    """场景表：Nacos 里有 tf-agent.yaml 的 scenes 就以远程为准，否则用代码默认。
+
+    远程只覆盖给出的字段，没写的沿用同名的内置场景，避免配一半就丢能力。
+    """
+    remote = nacos.runtime().scenes
+    if not remote:
+        return SCENES
+
+    built: dict[str, Scene] = {}
+    for name, item in remote.items():
+        if not isinstance(item, dict):
+            continue
+        base = SCENES.get(name)
+        default_tools = base.tools if base else ["search_kb"]
+        built[name] = Scene(
+            name=name,
+            title=str(item.get("title") or (base.title if base else name)),
+            tools=list(item.get("tools") or default_tools),
+            temperature=float(item.get("temperature", base.temperature if base else 0.2)),
+            max_tokens=int(item.get("max-tokens", base.max_tokens if base else 800)),
+            system_extra=str(item.get("system-extra") or (base.system_extra if base else "")),
+        )
+    return built or SCENES
+
+
 def get_scene(name: str | None) -> Scene:
-    return SCENES.get((name or DEFAULT_SCENE).strip(), SCENES[DEFAULT_SCENE])
+    table = scenes()
+    key = (name or DEFAULT_SCENE).strip()
+    if key in table:
+        return table[key]
+    if DEFAULT_SCENE in table:
+        return table[DEFAULT_SCENE]
+    return next(iter(table.values()))
 
 
 def build_system_prompt(scene: Scene, *, env: str, user_name: str) -> str:

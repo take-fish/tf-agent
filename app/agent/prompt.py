@@ -56,14 +56,14 @@ SCENES: dict[str, Scene] = {
     ),
     "kb": Scene(
         name="kb",
-        title="知识问答",
+        title="对话",
         tools=["search_kb"],
         temperature=0.3,
         system_extra="当前场景只查知识库：回答必须标注出自哪篇文档的第几块，不要调用其他工具。",
     ),
 }
 
-DEFAULT_SCENE = "ops"
+DEFAULT_SCENE = "kb"
 
 
 def scenes() -> dict[str, Scene]:

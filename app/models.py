@@ -122,3 +122,16 @@ class AgentKbChunk(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class AgentProfile(Base):
+    """Agent 展示配置（单行 id='default'）：名称 / 3D 形象 / 问候语 / 推荐问题。"""
+
+    __tablename__ = "agent_profile"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    config: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(3), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

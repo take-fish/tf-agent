@@ -162,12 +162,9 @@ class Settings:
     restart_workflow: str = field(default_factory=lambda: _env("FM_AGENT_RESTART_WORKFLOW", "restart.yml"))
 
     # 向量库 / 嵌入
-    # 后端二选一：qdrant（默认，轻量）| es（BM25 + kNN 混合检索）
-    kb_backend: str = field(default_factory=lambda: _env("FM_KB_BACKEND", "qdrant"))
+    # 向量库：Elasticsearch（BM25 + kNN 混合检索；Qdrant 已下线）
+    kb_backend: str = field(default_factory=lambda: _env("FM_KB_BACKEND", "es"))
     kb_hybrid: bool = field(default_factory=lambda: _bool("FM_KB_HYBRID", True))
-    qdrant_url: str = field(default_factory=lambda: _env("QDRANT_URL", "http://127.0.0.1:6333"))
-    qdrant_api_key: str = field(default_factory=lambda: _env("QDRANT_API_KEY"))
-    qdrant_collection: str = field(default_factory=lambda: _env("QDRANT_COLLECTION", "fm_kb"))
     es_url: str = field(default_factory=lambda: _env("FM_KB_ES_URL", "http://127.0.0.1:9200"))
     es_index: str = field(default_factory=lambda: _env("FM_KB_ES_INDEX", "fm_kb"))
     es_username: str = field(default_factory=lambda: _env("FM_KB_ES_USERNAME"))

@@ -58,7 +58,7 @@ async def status():
         "data": {
             "llm": {"ok": llm_ok, "base_url": settings.llm_base_url, "model": settings.llm_model, "error": llm_error},
             "db": {"ok": db_ok},
-            # 兼容旧前端字段：qdrant 只是默认后端名，真实后端看 vector.backend
+            # 旧字段（前端目前仍在读）：与 vector 等价，真实后端看 vector.backend
             "qdrant": {"ok": kb_ok, "url": kb_info.get("endpoint", "")},
             "vector": {**kb_info, "ok": kb_ok, "hybrid": settings.kb_hybrid},
             "tools": len(registry.all_specs()),

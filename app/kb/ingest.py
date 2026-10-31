@@ -1,4 +1,4 @@
-"""知识库入库：解析 → 切块 → 向量化 → 写 Qdrant + MySQL。"""
+"""知识库入库：解析 → 切块 → 向量化 → 写 ES + MySQL。"""
 
 from __future__ import annotations
 

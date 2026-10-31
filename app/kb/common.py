@@ -1,6 +1,6 @@
 """向量库无关的小工具：点 ID 与 payload 组装。
 
-Qdrant 和 Elasticsearch 用同一套 ID 规则，同一份切块数据，
+ES 文档 ID 与切块一一对应（uuid5），同一份切块数据，
 所以换后端时 ingest / 审核 / 重建索引的代码一行都不用改。
 """
 

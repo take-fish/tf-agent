@@ -1,4 +1,4 @@
-"""向量库后端：ES 的纯函数与门面分发。
+"""向量库：ES 的纯函数与 store 入口。
 
 不连真实 ES，只验证 mapping / bulk NDJSON / RRF 融合这些"错了会静默丢数据"的地方。
 """
@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 
-from app.config import settings
 from app.kb import es_backend, store
 
 CHUNKS = [
@@ -66,18 +65,14 @@ def test_rrf_fuse_handles_empty_and_single_lists():
     assert len(only) == 1 and only[0]["score"] == 1.0
 
 
-def test_store_facade_dispatches_by_backend(monkeypatch):
-    called: list[str] = []
-
-    monkeypatch.setattr(settings, "kb_backend", "es", raising=False)
-    monkeypatch.setattr(es_backend, "health", lambda: called.append("es") or True)
+def test_store_is_es_and_exposes_expected_entrypoints():
     assert store.backend() == "es"
+    for name in ("ensure", "upsert_chunks", "delete_doc", "delete_kb", "search", "health", "info"):
+        assert callable(getattr(store, name)), name
+
+
+def test_store_health_tracks_es_backend(monkeypatch):
+    called: list[str] = []
+    monkeypatch.setattr(es_backend, "health", lambda: called.append("es") or True)
     assert store.health() is True
     assert called == ["es"]
-
-    monkeypatch.setattr(settings, "kb_backend", "qdrant", raising=False)
-    from app.kb import qdrant_backend
-
-    monkeypatch.setattr(qdrant_backend, "health", lambda: called.append("qdrant") or True)
-    assert store.health() is True
-    assert called == ["es", "qdrant"]

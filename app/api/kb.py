@@ -43,11 +43,10 @@ class KbCreate(BaseModel):
 
 
 class KbUpdate(BaseModel):
-    """管理员维护知识库：改名/描述/对普通用户是否可见。"""
+    """管理员维护知识库：改名/描述。"""
 
     name: str | None = Field(default=None, min_length=1, max_length=60)
     description: str | None = Field(default=None, max_length=255)
-    visible: bool | None = None
 
 
 class KbSearch(BaseModel):
@@ -69,10 +68,11 @@ class CategoryUpdate(BaseModel):
 
 
 class DocUpdate(BaseModel):
-    """编辑文档：标题和/或正文；正文改动会重新切块入库。"""
+    """编辑文档：标题、正文、对普通用户是否可见（可见性仅管理员可改）。"""
 
     title: str | None = Field(default=None, min_length=1, max_length=200)
     content: str | None = Field(default=None, max_length=MAX_EDIT_CHARS)
+    visible: bool | None = None
 
 
 class ReviewPayload(BaseModel):
@@ -100,6 +100,7 @@ def _doc_dict(row: AgentKbDoc) -> dict:
         "reviewed_by": row.reviewed_by,
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "chunk_count": row.chunk_count,
+        "visible": bool(row.visible),
         "error": row.error,
         "created_by": row.created_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -109,14 +110,10 @@ def _doc_dict(row: AgentKbDoc) -> dict:
 # ---------------------------------------------------------------- 知识库
 
 
-def _list_kbs(identity: Identity) -> list[dict]:
-    can_manage = identity.has_permission(PERM_KB_MANAGE)
+def _list_kbs(identity: Identity) -> list[dict]:  # noqa: ARG001 - 保留签名，可见性已细化到文档
+    # 可见性在「文档」级控制，知识库本身对所有人可见
     with session_scope() as db:
-        query = db.query(AgentKb)
-        if not can_manage:
-            # 普通用户只看得到"对用户可见"的知识库（默认可见）
-            query = query.filter(AgentKb.visible == 1)
-        rows = query.order_by(AgentKb.created_at.desc()).all()
+        rows = db.query(AgentKb).order_by(AgentKb.created_at.desc()).all()
         docs = db.query(AgentKbDoc.kb_id, AgentKbDoc.review_status, func.count(AgentKbDoc.id)).group_by(
             AgentKbDoc.kb_id, AgentKbDoc.review_status
         )
@@ -135,7 +132,6 @@ def _list_kbs(identity: Identity) -> list[dict]:
                 "description": row.description,
                 "embedding_model": row.embedding_model,
                 "dim": row.dim,
-                "visible": bool(row.visible),
                 "doc_count": counts.get(row.id, {}).get("doc_count", 0),
                 "approved_count": counts.get(row.id, {}).get("approved_count", 0),
                 "pending_review": counts.get(row.id, {}).get("pending_review", 0),
@@ -165,13 +161,10 @@ async def update_kb(kb_id: str, payload: KbUpdate, _: Identity = Depends(require
                 row.name = payload.name.strip()
             if payload.description is not None:
                 row.description = payload.description.strip()
-            if payload.visible is not None:
-                row.visible = 1 if payload.visible else 0
             return {
                 "id": row.id,
                 "name": row.name,
                 "description": row.description,
-                "visible": bool(row.visible),
             }
 
     return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
@@ -319,21 +312,30 @@ async def delete_category(category_id: str, _: Identity = Depends(require_kb_man
 # ---------------------------------------------------------------- 文档
 
 
-def _kb_row(db, kb_id: str, identity: Identity) -> AgentKb:
-    """取知识库；对普通用户隐藏的知识库按不存在处理（不泄漏其存在）。"""
+def _kb_row(db, kb_id: str, identity: Identity) -> AgentKb:  # noqa: ARG001
     row = db.get(AgentKb, kb_id)
     if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
-    if not row.visible and not identity.has_permission(PERM_KB_MANAGE):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
     return row
 
 
+def _doc_row(db, kb_id: str, doc_id: str, identity: Identity) -> AgentKbDoc:
+    """取文档；对普通用户隐藏的文件按不存在处理（不泄漏其存在）。"""
+    row = db.get(AgentKbDoc, doc_id)
+    if row is None or row.kb_id != kb_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+    if not row.visible and not identity.has_permission(PERM_KB_MANAGE):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+    return row
+
+
 def _list_docs(kb_id: str, identity: Identity, review: str = "") -> list[dict]:
-    """所有用户都能看到知识库里的全部文档（含待审核/被驳回），审核状态用徽标表达。"""
+    """所有用户都能看到知识库里的文档（含待审核/被驳回）；隐藏文件只有管理员看得到。"""
     with session_scope() as db:
         _kb_row(db, kb_id, identity)
         query = db.query(AgentKbDoc).filter(AgentKbDoc.kb_id == kb_id)
+        if not identity.has_permission(PERM_KB_MANAGE):
+            query = query.filter(AgentKbDoc.visible == 1)
         if review:
             query = query.filter(AgentKbDoc.review_status == review)
         rows = query.order_by(AgentKbDoc.created_at.desc()).all()
@@ -343,9 +345,7 @@ def _list_docs(kb_id: str, identity: Identity, review: str = "") -> list[dict]:
 def _doc_detail(kb_id: str, doc_id: str, identity: Identity) -> dict:
     with session_scope() as db:
         _kb_row(db, kb_id, identity)
-        row = db.get(AgentKbDoc, doc_id)
-        if row is None or row.kb_id != kb_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+        row = _doc_row(db, kb_id, doc_id, identity)
         data = _doc_dict(row)
         data["summary"] = row.error or ""
         data["content"] = row.content or ""
@@ -383,15 +383,19 @@ async def update_doc(
     """
     _require_db()
 
+    can_manage = identity.has_permission(PERM_KB_MANAGE)
+    if payload.visible is not None and not can_manage:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有知识库管理员能设置文件可见性")
+
     def _work() -> bool:
         with session_scope() as db:
             _kb_row(db, kb_id, identity)
-            row = db.get(AgentKbDoc, doc_id)
-            if row is None or row.kb_id != kb_id:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
-            if row.created_by != identity.user_id and not identity.has_permission(PERM_KB_MANAGE):
+            row = _doc_row(db, kb_id, doc_id, identity)
+            if row.created_by != identity.user_id and not can_manage:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "只能编辑自己上传的文档")
 
+            if payload.visible is not None:
+                row.visible = 1 if payload.visible else 0
             content_changed = payload.content is not None and payload.content != (row.content or "")
             if payload.title is not None:
                 row.title = payload.title.strip()
@@ -575,12 +579,13 @@ def _doc_chunks(doc_id: str, limit: int = 200) -> list[dict]:
 
 @router.get("/{kb_id}/docs/{doc_id}/chunks")
 async def doc_chunks(kb_id: str, doc_id: str, identity: Identity = Depends(require_agent_use)):
-    """切块预览：详情页正文用；隐藏知识库对普通用户按 404。"""
+    """切块预览：详情页正文用；对普通用户隐藏的文件按 404。"""
     _require_db()
 
     def _work() -> list[dict]:
         with session_scope() as db:
             _kb_row(db, kb_id, identity)
+            _doc_row(db, kb_id, doc_id, identity)
         return _doc_chunks(doc_id)
 
     return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}

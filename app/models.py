@@ -73,8 +73,6 @@ class AgentKb(Base):
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     embedding_model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
-    # 对普通用户是否可见（默认可见）；隐藏只影响入口，不影响已入库向量
-    visible: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     created_by: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
 
@@ -88,6 +86,8 @@ class AgentKbDoc(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     # 解析后的正文：支持在线编辑（改完重新切块），为空时回落解析原始文件
     content: Mapped[str | None] = mapped_column(LONGTEXT, nullable=True)
+    # 对普通用户是否可见（默认可见）；隐藏只影响列表/详情，不影响已入库向量
+    visible: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     source: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     format: Mapped[str] = mapped_column(String(16), nullable=False, default="txt")
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

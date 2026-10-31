@@ -162,9 +162,17 @@ class Settings:
     restart_workflow: str = field(default_factory=lambda: _env("FM_AGENT_RESTART_WORKFLOW", "restart.yml"))
 
     # 向量库 / 嵌入
+    # 后端二选一：qdrant（默认，轻量）| es（BM25 + kNN 混合检索）
+    kb_backend: str = field(default_factory=lambda: _env("FM_KB_BACKEND", "qdrant"))
+    kb_hybrid: bool = field(default_factory=lambda: _bool("FM_KB_HYBRID", True))
     qdrant_url: str = field(default_factory=lambda: _env("QDRANT_URL", "http://127.0.0.1:6333"))
     qdrant_api_key: str = field(default_factory=lambda: _env("QDRANT_API_KEY"))
     qdrant_collection: str = field(default_factory=lambda: _env("QDRANT_COLLECTION", "fm_kb"))
+    es_url: str = field(default_factory=lambda: _env("FM_KB_ES_URL", "http://127.0.0.1:9200"))
+    es_index: str = field(default_factory=lambda: _env("FM_KB_ES_INDEX", "fm_kb"))
+    es_username: str = field(default_factory=lambda: _env("FM_KB_ES_USERNAME"))
+    es_password: str = field(default_factory=lambda: _env("FM_KB_ES_PASSWORD"))
+    es_timeout: float = field(default_factory=lambda: _float("FM_KB_ES_TIMEOUT", 10.0))
     embed_model: str = field(default_factory=lambda: _env("FM_EMBED_MODEL", "BAAI/bge-base-zh-v1.5"))
     embed_model_path: str = field(default_factory=lambda: _env("FM_EMBED_MODEL_PATH"))
     embed_dim: int = field(default_factory=lambda: _int("FM_EMBED_DIM", 768))

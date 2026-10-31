@@ -449,5 +449,7 @@ async def doc_chunks(kb_id: str, doc_id: str, _: Identity = Depends(require_admi
 @router.post("/search")
 async def search(payload: KbSearch, _: Identity = Depends(require_agent_use)):
     vector = (await embedder.embed([payload.query]))[0]
-    hits = await anyio.to_thread.run_sync(lambda: store.search(vector, payload.kb_ids or None, payload.top_k))
+    hits = await anyio.to_thread.run_sync(
+        lambda: store.search(vector, payload.kb_ids or None, payload.top_k, payload.query)
+    )
     return {"code": 0, "data": hits}

@@ -1,79 +1,30 @@
-"""向量库：Qdrant。一个 collection 存所有知识库，用 payload.kb_id 过滤。"""
+"""向量库门面：按 FM_KB_BACKEND 分发到 Qdrant 或 Elasticsearch。
+
+上层（ingest / api / tools）只认这 6 个函数，换后端不动业务代码：
+  ensure / upsert_chunks / delete_doc / delete_kb / search / health
+"""
 
 from __future__ import annotations
 
 import logging
-import time
-import uuid
 from typing import Any
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance,
-    FieldCondition,
-    Filter,
-    MatchAny,
-    MatchValue,
-    PointStruct,
-    VectorParams,
-)
-
 from app.config import settings
+from app.kb import es_backend, qdrant_backend
 
 logger = logging.getLogger(__name__)
 
-_client: QdrantClient | None = None
-_ready_at: float = 0.0
-# 集合存在性缓存：集合可能被外部删掉（运维重建、误删），
-# 缓存久了会把 404 一直带下去，所以只缓存 30 秒，并在失败时立刻失效重试。
-_READY_TTL = 30.0
+
+def backend() -> str:
+    return (settings.kb_backend or "qdrant").strip().lower()
 
 
-def get_client() -> QdrantClient:
-    global _client
-    if _client is None:
-        _client = QdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key or None,
-            timeout=10.0,
-        )
-    return _client
+def _impl():
+    return es_backend if backend() == "es" else qdrant_backend
 
 
-def reset_collection_cache() -> None:
-    global _ready_at
-    _ready_at = 0.0
-
-
-def ensure_collection(dim: int | None = None) -> None:
-    global _ready_at
-    if time.monotonic() - _ready_at < _READY_TTL:
-        return
-    client = get_client()
-    name = settings.qdrant_collection
-    existing = {c.name for c in client.get_collections().collections}
-    if name not in existing:
-        client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=dim or settings.embed_dim, distance=Distance.COSINE),
-        )
-        logger.info("创建向量集合 %s (dim=%s)", name, dim or settings.embed_dim)
-    _ready_at = time.monotonic()
-
-
-def point_id(chunk_id: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"fm-kb/{chunk_id}"))
-
-
-def _retry_once(func, *args, **kwargs):
-    """集合被外部删掉时，第一次调用会 404；失效缓存、确保集合存在后重试一次。"""
-    ensure_collection()
-    try:
-        return func(*args, **kwargs)
-    except Exception:
-        reset_collection_cache()
-        ensure_collection()
-        return func(*args, **kwargs)
+def ensure(dim: int | None = None) -> None:
+    _impl().ensure(dim)
 
 
 def upsert_chunks(
@@ -83,83 +34,29 @@ def upsert_chunks(
     chunks: list[dict[str, Any]],
     vectors: list[list[float]],
 ) -> None:
-    points = [
-        PointStruct(
-            id=point_id(chunk["id"]),
-            vector=vector,
-            payload={
-                "kb_id": kb_id,
-                "doc_id": doc_id,
-                "title": title,
-                "seq": chunk["seq"],
-                "text": chunk["text"],
-            },
-        )
-        for chunk, vector in zip(chunks, vectors, strict=False)
-    ]
-    if not points:
-        return
-    _retry_once(lambda: get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True))
+    _impl().upsert_chunks(kb_id, doc_id, title, chunks, vectors)
 
 
 def delete_doc(doc_id: str) -> None:
-    _delete(Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]))
+    _impl().delete_doc(doc_id)
 
 
 def delete_kb(kb_id: str) -> None:
-    _delete(Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]))
+    _impl().delete_kb(kb_id)
 
 
-def _delete(points_filter: Filter) -> None:
-    """集合本身不存在时删除是无意义的，按成功处理（重启后重建集合即可）。"""
-    try:
-        _retry_once(
-            lambda: get_client().delete(
-                collection_name=settings.qdrant_collection,
-                points_selector=points_filter,
-                wait=True,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("删除向量失败（忽略）：%s", exc)
-
-
-def search(vector: list[float], kb_ids: list[str] | None, top_k: int) -> list[dict[str, Any]]:
-    must = []
-    if kb_ids:
-        must.append(FieldCondition(key="kb_id", match=MatchAny(any=kb_ids)))
-    query_filter = Filter(must=must) if must else None
-
-    hits = _retry_once(
-        lambda: (
-            get_client()
-            .query_points(
-                collection_name=settings.qdrant_collection,
-                query=vector,
-                query_filter=query_filter,
-                limit=top_k,
-                with_payload=True,
-            )
-            .points
-        )
-    )
-    return [
-        {
-            "doc_id": hit.payload.get("doc_id", ""),
-            "kb_id": hit.payload.get("kb_id", ""),
-            "title": hit.payload.get("title", ""),
-            "seq": hit.payload.get("seq", 0),
-            "text": hit.payload.get("text", ""),
-            "score": float(hit.score),
-        }
-        for hit in hits
-    ]
+def search(
+    vector: list[float],
+    kb_ids: list[str] | None,
+    top_k: int,
+    query_text: str | None = None,
+) -> list[dict[str, Any]]:
+    return _impl().search(vector, kb_ids, top_k, query_text)
 
 
 def health() -> bool:
-    try:
-        get_client().get_collections()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Qdrant 不可用：%s", exc)
-        return False
+    return _impl().health()
+
+
+def info() -> dict[str, Any]:
+    return _impl().info()

@@ -44,7 +44,8 @@ async def scenes():
 @router.get("/status")
 async def status():
     db_ok = db_available()
-    qdrant_ok = await anyio.to_thread.run_sync(store.health)
+    kb_ok = await anyio.to_thread.run_sync(store.health)
+    kb_info = store.info()
     llm_ok = True
     llm_error = ""
     try:
@@ -57,7 +58,9 @@ async def status():
         "data": {
             "llm": {"ok": llm_ok, "base_url": settings.llm_base_url, "model": settings.llm_model, "error": llm_error},
             "db": {"ok": db_ok},
-            "qdrant": {"ok": qdrant_ok, "url": settings.qdrant_url},
+            # 兼容旧前端字段：qdrant 只是默认后端名，真实后端看 vector.backend
+            "qdrant": {"ok": kb_ok, "url": kb_info.get("endpoint", "")},
+            "vector": {**kb_info, "ok": kb_ok, "hybrid": settings.kb_hybrid},
             "tools": len(registry.all_specs()),
             "embedding": {"model": settings.embed_model, "dim": settings.embed_dim},
             "nacos": {

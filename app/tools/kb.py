@@ -25,9 +25,9 @@ async def search_kb(query: str, kb_ids: list[str] | None = None, top_k: int = 8)
         return ToolResult.error(f"向量化失败：{exc}")
 
     try:
-        hits = await anyio.to_thread.run_sync(lambda: store.search(vector, kb_ids, top_k))
+        hits = await anyio.to_thread.run_sync(lambda: store.search(vector, kb_ids, top_k, query))
     except Exception as exc:  # noqa: BLE001
-        return ToolResult.error(f"向量库不可用（{settings.qdrant_url}）：{exc}")
+        return ToolResult.error(f"向量库不可用（{settings.kb_backend}）：{exc}")
 
     if not hits:
         return ToolResult(text=f"知识库里没有找到与「{query}」相关的内容", rows=0)
@@ -36,7 +36,7 @@ async def search_kb(query: str, kb_ids: list[str] | None = None, top_k: int = 8)
     lines = []
     for idx, hit in enumerate(selected, start=1):
         text = hit["text"].strip()[: settings.kb_chunk_chars]
-        lines.append(f"[{idx}] 《{hit['title']}》第{int(hit['seq']) + 1}块（相似度 {hit['score']:.2f}）\n{text}")
+        lines.append(f"[{idx}] 《{hit['title']}》第{int(hit['seq']) + 1}块（相关度 {hit['score']:.2f}）\n{text}")
 
     return ToolResult(
         text="知识库检索结果：\n" + "\n\n".join(lines),

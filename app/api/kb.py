@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_EDIT_CHARS = 200_000
 
 
 class KbCreate(BaseModel):
@@ -67,6 +68,13 @@ class CategoryUpdate(BaseModel):
     sort: int | None = None
 
 
+class DocUpdate(BaseModel):
+    """编辑文档：标题和/或正文；正文改动会重新切块入库。"""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, max_length=MAX_EDIT_CHARS)
+
+
 class ReviewPayload(BaseModel):
     action: Literal["approve", "reject"]
     note: str = Field(default="", max_length=200)
@@ -83,6 +91,7 @@ def _doc_dict(row: AgentKbDoc) -> dict:
         "kb_id": row.kb_id,
         "category_id": row.category_id,
         "title": row.title,
+        "source": row.source,
         "format": row.format,
         "size_bytes": row.size_bytes,
         "status": row.status,
@@ -339,6 +348,7 @@ def _doc_detail(kb_id: str, doc_id: str, identity: Identity) -> dict:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
         data = _doc_dict(row)
         data["summary"] = row.error or ""
+        data["content"] = row.content or ""
         return data
 
 
@@ -356,6 +366,55 @@ async def list_docs(
 async def doc_detail(kb_id: str, doc_id: str, identity: Identity = Depends(require_agent_use)):
     """文档详情：所有用户都能看（所在知识库对用户隐藏时按 404）。"""
     _require_db()
+    return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _doc_detail(kb_id, doc_id, identity))}
+
+
+@router.put("/{kb_id}/docs/{doc_id}")
+async def update_doc(
+    kb_id: str,
+    doc_id: str,
+    payload: DocUpdate,
+    background: BackgroundTasks,
+    identity: Identity = Depends(require_agent_use),
+):
+    """编辑文档：上传者或知识库管理员可改标题/正文。
+
+    正文改动会清掉旧切块并重新入库；未审核通过的文件改完回到"待审核"。
+    """
+    _require_db()
+
+    def _work() -> bool:
+        with session_scope() as db:
+            _kb_row(db, kb_id, identity)
+            row = db.get(AgentKbDoc, doc_id)
+            if row is None or row.kb_id != kb_id:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+            if row.created_by != identity.user_id and not identity.has_permission(PERM_KB_MANAGE):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "只能编辑自己上传的文档")
+
+            content_changed = payload.content is not None and payload.content != (row.content or "")
+            if payload.title is not None:
+                row.title = payload.title.strip()
+            if content_changed:
+                row.content = payload.content
+                row.size_bytes = len((payload.content or "").encode("utf-8"))
+                row.error = ""
+                row.chunk_count = 0
+                # 已审核的走后台重建，未审核的回到待审核（等管理员再看一遍）
+                row.status = "pending" if row.review_status == "approved" else "waiting"
+            return content_changed
+
+    content_changed = await anyio.to_thread.run_sync(_work)
+    if content_changed:
+        await anyio.to_thread.run_sync(ingest.purge_index_sync, doc_id)
+
+        def _approved() -> bool:
+            with session_scope() as db:
+                row = db.get(AgentKbDoc, doc_id)
+                return bool(row and row.review_status == "approved")
+
+        if await anyio.to_thread.run_sync(_approved):
+            background.add_task(ingest.ingest_document, doc_id)
     return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _doc_detail(kb_id, doc_id, identity))}
 
 
@@ -388,12 +447,19 @@ async def upload_doc(
             if category_id and db.get(AgentKbCategory, category_id) is None:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "分类不存在")
             ingest.save_upload(doc_id, data)
+            # 上传时就解析出正文，方便详情查看与在线编辑；解析失败不影响上传（入库时再试）
+            try:
+                content = ingest.extract_text(data, suffix)
+            except Exception:  # noqa: BLE001
+                logger.warning("上传时解析正文失败，入库时重试：doc=%s", doc_id)
+                content = None
             db.add(
                 AgentKbDoc(
                     id=doc_id,
                     kb_id=kb_id,
                     category_id=category_id or None,
                     title=doc_title,
+                    content=content,
                     source=file.filename or "",
                     format=suffix,
                     size_bytes=len(data),

@@ -129,17 +129,27 @@ def ingest_document_sync(doc_id: str) -> int:
         if doc is None:
             raise ValueError(f"文档不存在：{doc_id}")
         kb_id, title, fmt = doc.kb_id, doc.title, doc.format
+        content = doc.content or ""
         if doc.review_status != "approved":
             _set_status(doc_id, "waiting" if doc.review_status == "pending" else "rejected")
             logger.info("文档未通过审核，跳过入库 %s（review_status=%s）", doc_id, doc.review_status)
             return 0
 
     _set_status(doc_id, "parsing")
-    path = Path(settings.upload_dir) / f"{doc_id}.bin"
-    if not path.exists():
-        _set_status(doc_id, "failed", error="原始文件丢失，请重新上传")
-        raise FileNotFoundError(str(path))
-    text = extract_text(path.read_bytes(), fmt)
+    if content.strip():
+        # 优先用库里的正文（在线编辑后的版本），不再回头解析原始文件
+        text = content
+    else:
+        path = Path(settings.upload_dir) / f"{doc_id}.bin"
+        if not path.exists():
+            _set_status(doc_id, "failed", error="原始文件丢失，请重新上传")
+            raise FileNotFoundError(str(path))
+        text = extract_text(path.read_bytes(), fmt)
+        # 首次解析的正文落库，之后编辑/重建都走 content
+        with session_scope() as db:
+            row = db.get(AgentKbDoc, doc_id)
+            if row is not None and not row.content:
+                row.content = text
 
     _set_status(doc_id, "chunking")
     pieces = chunk_text(text)

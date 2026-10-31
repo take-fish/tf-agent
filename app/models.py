@@ -86,6 +86,8 @@ class AgentKbDoc(Base):
     kb_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     category_id: Mapped[str | None] = mapped_column(String(40), index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # 解析后的正文：支持在线编辑（改完重新切块），为空时回落解析原始文件
+    content: Mapped[str | None] = mapped_column(LONGTEXT, nullable=True)
     source: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     format: Mapped[str] = mapped_column(String(16), nullable=False, default="txt")
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

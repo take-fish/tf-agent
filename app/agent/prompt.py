@@ -40,6 +40,8 @@ class Scene:
 
 
 SCENES: dict[str, Scene] = {
+    # 默认场景：不预设工具，全部可用工具交给模型按用户描述自行选择
+    "auto": Scene(name="auto", title="对话", tools=[], temperature=0.3),
     "ops": Scene(
         name="ops",
         title="运维排障",
@@ -63,7 +65,7 @@ SCENES: dict[str, Scene] = {
     ),
 }
 
-DEFAULT_SCENE = "kb"
+DEFAULT_SCENE = "auto"
 
 
 def scenes() -> dict[str, Scene]:
@@ -89,12 +91,16 @@ def scenes() -> dict[str, Scene]:
             max_tokens=int(item.get("max-tokens", base.max_tokens if base else 800)),
             system_extra=str(item.get("system-extra") or (base.system_extra if base else "")),
         )
+    built.setdefault("auto", SCENES["auto"])
     return built or SCENES
 
 
 def get_scene(name: str | None) -> Scene:
+    """取场景；空 / auto 表示"不预设工具"，由模型按用户描述自己选。"""
     table = scenes()
-    key = (name or DEFAULT_SCENE).strip()
+    key = (name or DEFAULT_SCENE).strip().lower()
+    if key in ("", "auto"):
+        return table.get("auto", SCENES["auto"])
     if key in table:
         return table[key]
     if DEFAULT_SCENE in table:

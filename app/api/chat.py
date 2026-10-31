@@ -32,7 +32,7 @@ _rate_bucket: dict[int, list[float]] = defaultdict(list)
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     session_id: str = ""
-    scene: str = "kb"  # 与前端默认 tab 对齐：对话优先
+    scene: str = ""  # 空 = auto：由用户在对话里描述，模型自己选工具
     env: str = Field(default="prod", pattern="^(prod|test)$")
 
 

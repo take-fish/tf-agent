@@ -65,7 +65,8 @@ async def stream_agent(
     trace_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
     scene = prompt.get_scene(scene_name)
-    tools = registry.allowed_tools(identity, scene.tools)
+    # 场景没限定工具（auto）时，把用户有权限的工具全部交给模型自己挑
+    tools = registry.allowed_tools(identity, scene.tools or None)
     tool_schemas = [spec.schema() for spec in tools] or None
     system = prompt.build_system_prompt(scene, env=env, user_name=identity.display_name)
     messages = context.build_round_messages(

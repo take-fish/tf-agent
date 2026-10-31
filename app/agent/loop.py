@@ -36,6 +36,12 @@ def _parse_args(raw: str) -> dict[str, Any]:
     return value
 
 
+def _effective_env(arguments: dict[str, Any], default: str) -> str:
+    """工具参数里带了 env 就以参数为准：环境由用户在对话里说明，而不是前端开关。"""
+    value = str((arguments or {}).get("env") or "").strip().lower()
+    return value if value in {"prod", "test"} else default
+
+
 async def _execute(spec, arguments: dict[str, Any], env: str) -> tuple[Any, int]:
     """执行工具，返回 (ToolResult, 耗时 ms)。"""
     start = time.perf_counter()
@@ -123,7 +129,7 @@ async def stream_agent(
                 arguments=arguments,
                 user_id=identity.user_id,
                 trace_id=trace_id,
-                env=env,
+                env=_effective_env(arguments, env),
                 scene=scene.name,
                 description=_describe(spec.name, arguments),
             )
@@ -131,7 +137,7 @@ async def stream_agent(
                 trace_id=trace_id,
                 user_id=identity.user_id,
                 scene=scene.name,
-                env=env,
+                env=_effective_env(arguments, env),
                 tool=spec.name,
                 arguments=arguments,
                 ok=True,
@@ -181,7 +187,7 @@ async def stream_agent(
                     trace_id=trace_id,
                     user_id=identity.user_id,
                     scene=scene.name,
-                    env=env,
+                    env=_effective_env(arguments, env),
                     tool=spec.name,
                     arguments=arguments,
                     ok=False,
@@ -203,7 +209,7 @@ async def stream_agent(
                     trace_id=trace_id,
                     user_id=identity.user_id,
                     scene=scene.name,
-                    env=env,
+                    env=_effective_env(arguments, env),
                     tool=spec.name,
                     arguments=arguments,
                     ok=False,
@@ -218,7 +224,7 @@ async def stream_agent(
                 trace_id=trace_id,
                 user_id=identity.user_id,
                 scene=scene.name,
-                env=env,
+                env=_effective_env(arguments, env),
                 tool=spec.name,
                 arguments=arguments,
                 ok=result.ok,

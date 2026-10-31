@@ -106,6 +106,10 @@ def build_system_prompt(scene: Scene, *, env: str, user_name: str) -> str:
     parts = [SYSTEM_PROMPT]
     if scene.system_extra:
         parts.append(f"\n【场景】{scene.title}：{scene.system_extra}")
-    parts.append(f"\n【当前环境】默认 env={env}（另一环境是 {'test' if env == 'prod' else 'prod'}）")
+    parts.append(
+        f"\n【环境】默认 env={env}。用户在对话里明确说了环境（例如「测试环境」「test 环境」「生产」）时，"
+        "调用带 env 参数的工具必须按用户说的传（test 或 prod），并在回答里点明是哪个环境；"
+        "用户没说环境就按默认值，不要自己猜。"
+    )
     parts.append(f"【当前用户】{user_name}")
     return "".join(parts)

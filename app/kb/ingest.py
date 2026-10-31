@@ -119,12 +119,20 @@ def _set_status(doc_id: str, status: str, *, error: str = "", chunk_count: int |
 
 
 def ingest_document_sync(doc_id: str) -> int:
-    """同步入库（在后台线程里跑）。返回 chunk 数。"""
+    """同步入库（在后台线程里跑）。返回 chunk 数。
+
+    只有管理员审核通过（review_status=approved）的文档才允许进索引；
+    未审核/已驳回的文档即使被误触发也保持 waiting/rejected，不污染检索结果。
+    """
     with session_scope() as db:
         doc = db.get(AgentKbDoc, doc_id)
         if doc is None:
             raise ValueError(f"文档不存在：{doc_id}")
         kb_id, title, fmt = doc.kb_id, doc.title, doc.format
+        if doc.review_status != "approved":
+            _set_status(doc_id, "waiting" if doc.review_status == "pending" else "rejected")
+            logger.info("文档未通过审核，跳过入库 %s（review_status=%s）", doc_id, doc.review_status)
+            return 0
 
     _set_status(doc_id, "parsing")
     path = Path(settings.upload_dir) / f"{doc_id}.bin"
@@ -173,6 +181,20 @@ async def ingest_document(doc_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("文档入库失败 %s", doc_id)
         _set_status(doc_id, "failed", error=str(exc))
+
+
+def purge_index_sync(doc_id: str) -> None:
+    """只删向量和切块，保留文档记录（驳回/取消发布时用）。"""
+    store.delete_doc(doc_id)
+    with session_scope() as db:
+        db.query(AgentKbChunk).filter(AgentKbChunk.doc_id == doc_id).delete()
+        doc = db.get(AgentKbDoc, doc_id)
+        if doc is not None:
+            doc.chunk_count = 0
+
+
+async def purge_index(doc_id: str) -> None:
+    await anyio.to_thread.run_sync(purge_index_sync, doc_id)
 
 
 async def delete_document(doc_id: str) -> None:

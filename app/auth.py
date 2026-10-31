@@ -135,6 +135,20 @@ async def require_admin(request: Request) -> Identity:
     return identity
 
 
+async def require_agent_use(request: Request) -> Identity:
+    """普通员工：能对话、能上传知识库文件（上传后要等管理员审核才进索引）。"""
+    identity = await get_identity(request)
+    allowed = (
+        identity.is_admin
+        or identity.has_permission("agent:use")
+        or identity.has_permission("agent:admin")
+        or identity.has_permission("agent:kb:write")
+    )
+    if not allowed:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "没有使用智能助手的权限")
+    return identity
+
+
 async def require_kb_write(request: Request) -> Identity:
     identity = await get_identity(request)
     if identity.is_admin or identity.has_permission("agent:kb:write") or identity.has_permission("agent:admin"):

@@ -82,11 +82,17 @@ class AgentKbDoc(Base):
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     kb_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    category_id: Mapped[str | None] = mapped_column(String(40), index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     source: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     format: Mapped[str] = mapped_column(String(16), nullable=False, default="txt")
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # 审核与索引是两个维度：内部员工上传后等管理员审核，通过才进索引
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(3))
+    review_note: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     created_by: Mapped[int | None] = mapped_column(BigInteger)
@@ -94,6 +100,17 @@ class AgentKbDoc(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(3), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class AgentKbCategory(Base):
+    __tablename__ = "agent_kb_category"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
 
 
 class AgentKbChunk(Base):

@@ -25,8 +25,7 @@ def _headers() -> dict[str, str]:
 
 async def _dispatch(repo: str, workflow: str, ref: str, inputs: dict[str, str]) -> tuple[bool, str]:
     url = (
-        f"{settings.github_api.rstrip('/')}/repos/{settings.github_org}/{repo}"
-        f"/actions/workflows/{workflow}/dispatches"
+        f"{settings.github_api.rstrip('/')}/repos/{settings.github_org}/{repo}/actions/workflows/{workflow}/dispatches"
     )
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(url, json={"ref": ref, "inputs": inputs}, headers=_headers())
@@ -76,8 +75,9 @@ async def restart_service(service: str, env: str = "prod") -> ToolResult:
         return ToolResult.error(f"调用 GitHub 失败：{exc}")
     if not ok:
         return ToolResult.error(f"重启 {service} 失败：{message}")
-    return ToolResult(text=f"已触发 {service} 重启（workflow={workflow}, env={env}）", rows=1,
-                      data={"service": service, "env": env})
+    return ToolResult(
+        text=f"已触发 {service} 重启（workflow={workflow}, env={env}）", rows=1, data={"service": service, "env": env}
+    )
 
 
 spec_trigger = ToolSpec(

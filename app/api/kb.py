@@ -260,9 +260,7 @@ async def delete_category(category_id: str, _: Identity = Depends(require_admin)
             if row is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "分类不存在")
             # 分类删除不删文档，只把文档的归类清空，避免误删资料
-            db.query(AgentKbDoc).filter(AgentKbDoc.category_id == category_id).update(
-                {AgentKbDoc.category_id: None}
-            )
+            db.query(AgentKbDoc).filter(AgentKbDoc.category_id == category_id).update({AgentKbDoc.category_id: None})
             db.delete(row)
 
     await anyio.to_thread.run_sync(_work)
@@ -277,9 +275,7 @@ def _list_docs(kb_id: str, identity: Identity, review: str = "") -> list[dict]:
         query = db.query(AgentKbDoc).filter(AgentKbDoc.kb_id == kb_id)
         if not identity.is_admin:
             # 普通员工只看已通过的和自己上传的（含被驳回，便于改完重传）
-            query = query.filter(
-                or_(AgentKbDoc.review_status == "approved", AgentKbDoc.created_by == identity.user_id)
-            )
+            query = query.filter(or_(AgentKbDoc.review_status == "approved", AgentKbDoc.created_by == identity.user_id))
         if review:
             query = query.filter(AgentKbDoc.review_status == review)
         rows = query.order_by(AgentKbDoc.created_at.desc()).all()
@@ -390,9 +386,7 @@ async def review_doc(
 
 
 @router.post("/{kb_id}/docs/{doc_id}/rebuild")
-async def rebuild_doc(
-    kb_id: str, doc_id: str, background: BackgroundTasks, _: Identity = Depends(require_admin)
-):
+async def rebuild_doc(kb_id: str, doc_id: str, background: BackgroundTasks, _: Identity = Depends(require_admin)):
     _require_db()
 
     def _mark() -> None:
@@ -419,11 +413,7 @@ async def reindex_kb(kb_id: str, background: BackgroundTasks, _: Identity = Depe
         with session_scope() as db:
             if db.get(AgentKb, kb_id) is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
-            rows = (
-                db.query(AgentKbDoc)
-                .filter(AgentKbDoc.kb_id == kb_id, AgentKbDoc.review_status == "approved")
-                .all()
-            )
+            rows = db.query(AgentKbDoc).filter(AgentKbDoc.kb_id == kb_id, AgentKbDoc.review_status == "approved").all()
             for doc in rows:
                 doc.status = "pending"
                 doc.error = ""
@@ -445,11 +435,7 @@ async def delete_doc(kb_id: str, doc_id: str, _: Identity = Depends(require_admi
 def _doc_chunks(doc_id: str, limit: int = 200) -> list[dict]:
     with session_scope() as db:
         rows = (
-            db.query(AgentKbChunk)
-            .filter(AgentKbChunk.doc_id == doc_id)
-            .order_by(AgentKbChunk.seq)
-            .limit(limit)
-            .all()
+            db.query(AgentKbChunk).filter(AgentKbChunk.doc_id == doc_id).order_by(AgentKbChunk.seq).limit(limit).all()
         )
         return [{"id": r.id, "seq": r.seq, "text": r.text, "tokens": r.tokens} for r in rows]
 
@@ -463,7 +449,5 @@ async def doc_chunks(kb_id: str, doc_id: str, _: Identity = Depends(require_admi
 @router.post("/search")
 async def search(payload: KbSearch, _: Identity = Depends(require_agent_use)):
     vector = (await embedder.embed([payload.query]))[0]
-    hits = await anyio.to_thread.run_sync(
-        lambda: store.search(vector, payload.kb_ids or None, payload.top_k)
-    )
+    hits = await anyio.to_thread.run_sync(lambda: store.search(vector, payload.kb_ids or None, payload.top_k))
     return {"code": 0, "data": hits}

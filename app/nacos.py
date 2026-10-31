@@ -296,9 +296,7 @@ class NacosRuntime:
             return
         if _status.registered:
             try:
-                await self.client.deregister_instance(
-                    settings.nacos_service_name, self.ip, settings.nacos_port
-                )
+                await self.client.deregister_instance(settings.nacos_service_name, self.ip, settings.nacos_port)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Nacos 注销失败：%s", exc)
             _status.registered = False

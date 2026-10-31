@@ -147,8 +147,13 @@ async def stream_agent(
                 "description": action.description,
                 "expires_in": confirm_store.TTL_SECONDS,
             }
-            yield {"type": "done", "text": final_text, "usage": usage, "session_id": session_id,
-                   "pending_confirm": True}
+            yield {
+                "type": "done",
+                "text": final_text,
+                "usage": usage,
+                "session_id": session_id,
+                "pending_confirm": True,
+            }
             return
 
         # ---- 只读工具：串行执行 ----
@@ -163,8 +168,7 @@ async def stream_agent(
                 arguments = _parse_args(call["arguments"])
             except ValueError as exc:
                 results.append((call["id"], str(exc)))
-                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error",
-                       "message": str(exc)}
+                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error", "message": str(exc)}
                 continue
 
             yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "running", "args": arguments}
@@ -173,18 +177,40 @@ async def stream_agent(
             except TimeoutError:
                 result, ms = None, 0
                 results.append((call["id"], f"工具 {spec.name} 超时"))
-                await audit.record(trace_id=trace_id, user_id=identity.user_id, scene=scene.name, env=env,
-                                   tool=spec.name, arguments=arguments, ok=False, rows=0, ms=0)
-                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error",
-                       "message": "执行超时"}
+                await audit.record(
+                    trace_id=trace_id,
+                    user_id=identity.user_id,
+                    scene=scene.name,
+                    env=env,
+                    tool=spec.name,
+                    arguments=arguments,
+                    ok=False,
+                    rows=0,
+                    ms=0,
+                )
+                yield {
+                    "type": "tool",
+                    "call_id": call["id"],
+                    "name": spec.name,
+                    "status": "error",
+                    "message": "执行超时",
+                }
                 continue
             except Exception as exc:  # noqa: BLE001 - 工具异常要回喂模型，不中断对话
                 logger.exception("工具 %s 执行失败", spec.name)
                 results.append((call["id"], f"工具 {spec.name} 执行失败：{exc}"))
-                await audit.record(trace_id=trace_id, user_id=identity.user_id, scene=scene.name, env=env,
-                                   tool=spec.name, arguments=arguments, ok=False, rows=0, ms=0)
-                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error",
-                       "message": str(exc)}
+                await audit.record(
+                    trace_id=trace_id,
+                    user_id=identity.user_id,
+                    scene=scene.name,
+                    env=env,
+                    tool=spec.name,
+                    arguments=arguments,
+                    ok=False,
+                    rows=0,
+                    ms=0,
+                )
+                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error", "message": str(exc)}
                 continue
 
             results.append((call["id"], result.text))
@@ -219,15 +245,24 @@ async def stream_agent(
 
 def _describe(tool: str, arguments: dict[str, Any]) -> str:
     if tool == "trigger_release":
-        return f"触发发布：仓库 {arguments.get('repo')}，分支 {arguments.get('ref', 'master')}，" \
-               f"环境 {arguments.get('env', 'prod')}"
+        return (
+            f"触发发布：仓库 {arguments.get('repo')}，分支 {arguments.get('ref', 'master')}，"
+            f"环境 {arguments.get('env', 'prod')}"
+        )
     if tool == "restart_service":
         return f"重启服务：{arguments.get('service')}，环境 {arguments.get('env', 'prod')}"
     return f"执行 {tool}：{json.dumps(arguments, ensure_ascii=False)[:120]}"
 
 
-def _persist(session_id: str, user_id: int, scene: str, env: str,
-             history: list[dict[str, Any]], user_text: str, assistant_text: str) -> None:
+def _persist(
+    session_id: str,
+    user_id: int,
+    scene: str,
+    env: str,
+    history: list[dict[str, Any]],
+    user_text: str,
+    assistant_text: str,
+) -> None:
     """会话落库并裁到最近 N 条。"""
     try:
         from app.db import db_available, session_scope
@@ -239,14 +274,12 @@ def _persist(session_id: str, user_id: int, scene: str, env: str,
         messages.append({"role": "user", "content": user_text})
         if assistant_text:
             messages.append({"role": "assistant", "content": assistant_text})
-        messages = messages[-settings.history_limit:]
+        messages = messages[-settings.history_limit :]
 
         with session_scope() as db:
             row = db.get(AgentSession, session_id)
             if row is None:
-                row = AgentSession(
-                    id=session_id, user_id=user_id, scene=scene, env=env, messages=messages
-                )
+                row = AgentSession(id=session_id, user_id=user_id, scene=scene, env=env, messages=messages)
                 db.add(row)
             else:
                 row.scene = scene
@@ -256,8 +289,15 @@ def _persist(session_id: str, user_id: int, scene: str, env: str,
         logger.warning("会话保存失败 %s: %s", session_id, exc)
 
 
-async def _save_session(session_id: str, user_id: int, scene: str, env: str,
-                        history: list[dict[str, Any]], user_text: str, assistant_text: str) -> None:
+async def _save_session(
+    session_id: str,
+    user_id: int,
+    scene: str,
+    env: str,
+    history: list[dict[str, Any]],
+    user_text: str,
+    assistant_text: str,
+) -> None:
     await anyio.to_thread.run_sync(
         lambda: _persist(session_id, user_id, scene, env, history, user_text, assistant_text)
     )
@@ -273,16 +313,43 @@ async def execute_confirmed(action: confirm_store.PendingAction, identity) -> As
     try:
         result, ms = await _execute(spec, action.arguments, action.env)
     except Exception as exc:  # noqa: BLE001
-        await audit.record(trace_id=action.trace_id, user_id=identity.user_id, scene=action.scene,
-                           env=action.env, tool=spec.name, arguments=action.arguments, ok=False,
-                           rows=0, ms=0, need_confirm=True, confirmed_by=identity.user_id)
+        await audit.record(
+            trace_id=action.trace_id,
+            user_id=identity.user_id,
+            scene=action.scene,
+            env=action.env,
+            tool=spec.name,
+            arguments=action.arguments,
+            ok=False,
+            rows=0,
+            ms=0,
+            need_confirm=True,
+            confirmed_by=identity.user_id,
+        )
         yield {"type": "tool", "name": spec.name, "status": "error", "message": str(exc)}
         yield {"type": "error", "message": f"执行失败：{exc}"}
         return
 
-    await audit.record(trace_id=action.trace_id, user_id=identity.user_id, scene=action.scene,
-                       env=action.env, tool=spec.name, arguments=action.arguments, ok=result.ok,
-                       rows=result.rows, ms=ms, need_confirm=True, confirmed_by=identity.user_id)
-    yield {"type": "tool", "name": spec.name, "status": "done", "ok": result.ok, "rows": result.rows,
-           "ms": ms, "data": result.data}
+    await audit.record(
+        trace_id=action.trace_id,
+        user_id=identity.user_id,
+        scene=action.scene,
+        env=action.env,
+        tool=spec.name,
+        arguments=action.arguments,
+        ok=result.ok,
+        rows=result.rows,
+        ms=ms,
+        need_confirm=True,
+        confirmed_by=identity.user_id,
+    )
+    yield {
+        "type": "tool",
+        "name": spec.name,
+        "status": "done",
+        "ok": result.ok,
+        "rows": result.rows,
+        "ms": ms,
+        "data": result.data,
+    }
     yield {"type": "done", "text": result.text}

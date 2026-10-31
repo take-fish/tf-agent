@@ -28,9 +28,7 @@ async def my_tools(identity: Identity = Depends(get_identity)):
     specs = registry.allowed_tools(identity, None)
     return {
         "code": 0,
-        "data": [
-            {"name": s.name, "description": s.description, "read_only": s.read_only} for s in specs
-        ],
+        "data": [{"name": s.name, "description": s.description, "read_only": s.read_only} for s in specs],
     }
 
 
@@ -38,9 +36,7 @@ async def my_tools(identity: Identity = Depends(get_identity)):
 async def scenes():
     return {
         "code": 0,
-        "data": [
-            {"name": s.name, "title": s.title, "tools": s.tools} for s in prompt.scenes().values()
-        ],
+        "data": [{"name": s.name, "title": s.title, "tools": s.tools} for s in prompt.scenes().values()],
         "source": nacos.status().config_source,
     }
 
@@ -59,8 +55,7 @@ async def status():
     return {
         "code": 0,
         "data": {
-            "llm": {"ok": llm_ok, "base_url": settings.llm_base_url, "model": settings.llm_model,
-                    "error": llm_error},
+            "llm": {"ok": llm_ok, "base_url": settings.llm_base_url, "model": settings.llm_model, "error": llm_error},
             "db": {"ok": db_ok},
             "qdrant": {"ok": qdrant_ok, "url": settings.qdrant_url},
             "tools": len(registry.all_specs()),

@@ -35,8 +35,7 @@ def _load_columns(view: str) -> set[str]:
     with _get_engine().connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
             ),
             {"t": view},
         ).fetchall()
@@ -95,9 +94,7 @@ async def query_view(view: str, filters: dict[str, Any] | None = None, limit: in
     order_by = ""  # 白名单 value 是视图说明，不在工具层做排序，避免暴露非索引列
 
     try:
-        lines, rows = await anyio.to_thread.run_sync(
-            lambda: _run_query(view, filters, limit, str(order_by).strip())
-        )
+        lines, rows = await anyio.to_thread.run_sync(lambda: _run_query(view, filters, limit, str(order_by).strip()))
     except Exception as exc:  # noqa: BLE001
         return ToolResult.error(f"查询失败：{exc}")
 
@@ -119,7 +116,7 @@ spec = ToolSpec(
             "view": {"type": "string", "description": "视图名，必须在白名单内"},
             "filters": {
                 "type": "object",
-                "description": "等值过滤条件，例如 {\"biz_date\": \"2026-10-30\"}",
+                "description": '等值过滤条件，例如 {"biz_date": "2026-10-30"}',
                 "additionalProperties": {"type": "string"},
             },
             "limit": {"type": "integer", "description": "返回行数，默认 20，最大 50", "minimum": 1, "maximum": 50},

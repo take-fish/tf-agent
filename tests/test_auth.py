@@ -13,8 +13,9 @@ from fastapi import HTTPException
 from app import auth
 
 
-def _sign(secret: str, user_id: int, username: str, nickname: str, role: str,
-          roles: str, permissions: str, exp: int) -> dict[str, str]:
+def _sign(
+    secret: str, user_id: int, username: str, nickname: str, role: str, roles: str, permissions: str, exp: int
+) -> dict[str, str]:
     def b64(value: str) -> str:
         return base64.urlsafe_b64encode(value.encode()).rstrip(b"=").decode()
 
@@ -39,8 +40,9 @@ def _secret(monkeypatch):
 
 
 def test_verify_ok():
-    headers = _sign("s3cr3t-for-test", 12, "alice", "爱丽丝", "ADMIN", "ADMIN,USER", "agent:admin",
-                    int(time.time()) + 60)
+    headers = _sign(
+        "s3cr3t-for-test", 12, "alice", "爱丽丝", "ADMIN", "ADMIN,USER", "agent:admin", int(time.time()) + 60
+    )
     identity = auth.verify_signature(headers)
     assert identity.user_id == 12
     assert identity.nickname == "爱丽丝"

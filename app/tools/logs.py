@@ -83,9 +83,16 @@ async def search_logs(
     entries = entries[:limit]
 
     if not entries:
-        cond = " ".join(filter(None, [f"trace_id={trace_id}" if trace_id else "",
-                                      f"service={service}" if service else "",
-                                      f"keyword={keyword}" if keyword else ""]))
+        cond = " ".join(
+            filter(
+                None,
+                [
+                    f"trace_id={trace_id}" if trace_id else "",
+                    f"service={service}" if service else "",
+                    f"keyword={keyword}" if keyword else "",
+                ],
+            )
+        )
         return ToolResult(text=f"最近 {range_minutes} 分钟没有匹配的日志（{cond}）", rows=0)
 
     lines = []

@@ -82,8 +82,7 @@ async def query_pipeline(repo: str = "", branch: str = "", limit: int = 5) -> To
 
 spec = ToolSpec(
     name="query_pipeline",
-    description="查询 GitHub Actions 流水线最近的运行状态（分支、结论、失败步骤链接）。"
-    "不传 repo 则查全部常用仓库。",
+    description="查询 GitHub Actions 流水线最近的运行状态（分支、结论、失败步骤链接）。不传 repo 则查全部常用仓库。",
     parameters=obj_schema(
         {
             "repo": {"type": "string", "description": "仓库名，例如 tf-game；留空查全部"},

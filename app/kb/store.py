@@ -99,9 +99,7 @@ def upsert_chunks(
     ]
     if not points:
         return
-    _retry_once(
-        lambda: get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
-    )
+    _retry_once(lambda: get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True))
 
 
 def delete_doc(doc_id: str) -> None:
@@ -133,15 +131,17 @@ def search(vector: list[float], kb_ids: list[str] | None, top_k: int) -> list[di
     query_filter = Filter(must=must) if must else None
 
     hits = _retry_once(
-        lambda: get_client()
-        .query_points(
-            collection_name=settings.qdrant_collection,
-            query=vector,
-            query_filter=query_filter,
-            limit=top_k,
-            with_payload=True,
+        lambda: (
+            get_client()
+            .query_points(
+                collection_name=settings.qdrant_collection,
+                query=vector,
+                query_filter=query_filter,
+                limit=top_k,
+                with_payload=True,
+            )
+            .points
         )
-        .points
     )
     return [
         {

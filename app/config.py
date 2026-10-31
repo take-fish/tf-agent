@@ -140,17 +140,19 @@ class Settings:
     github_org: str = field(default_factory=lambda: _env("GITHUB_ORG", "take-fish"))
     # repo -> 发布 workflow 文件名
     deploy_workflows: dict = field(
-        default_factory=lambda: _json_dict("FM_AGENT_DEPLOY_WORKFLOWS")
-        or {
-            "tf-web": "deploy.yml",
-            "tf-console": "deploy.yml",
-            "tf-gateway": "release.yml",
-            "tf-user": "python-release.yml",
-            "tf-chat": "python-release.yml",
-            "tf-reader": "python-release.yml",
-            "tf-game": "python-release.yml",
-            "tf-music": "python-release.yml",
-        }
+        default_factory=lambda: (
+            _json_dict("FM_AGENT_DEPLOY_WORKFLOWS")
+            or {
+                "tf-web": "deploy.yml",
+                "tf-console": "deploy.yml",
+                "tf-gateway": "release.yml",
+                "tf-user": "python-release.yml",
+                "tf-chat": "python-release.yml",
+                "tf-reader": "python-release.yml",
+                "tf-game": "python-release.yml",
+                "tf-music": "python-release.yml",
+            }
+        )
     )
 
     # 只读数据库视图白名单：view -> 说明

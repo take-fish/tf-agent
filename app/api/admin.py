@@ -135,9 +135,7 @@ async def stats(_: Identity = Depends(require_admin)):
             total_calls = db.query(func.count(AgentToolCall.id)).scalar() or 0
             failed = db.query(func.count(AgentToolCall.id)).filter(AgentToolCall.ok == 0).scalar() or 0
             sessions = db.query(func.count(AgentSession.id)).scalar() or 0
-            by_tool = db.query(AgentToolCall.tool, func.count(AgentToolCall.id)).group_by(
-                AgentToolCall.tool
-            ).all()
+            by_tool = db.query(AgentToolCall.tool, func.count(AgentToolCall.id)).group_by(AgentToolCall.tool).all()
             return {
                 "total_calls": int(total_calls),
                 "failed_calls": int(failed),

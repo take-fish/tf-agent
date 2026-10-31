@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.agent import confirm_store, loop
 from app.api.chat import sse
-from app.auth import Identity, get_identity
+from app.auth import PERM_DEPLOY_TRIGGER, Identity, get_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,8 +23,8 @@ class ConfirmRequest(BaseModel):
 
 @router.post("/confirm")
 async def confirm(req: ConfirmRequest, identity: Identity = Depends(get_identity)):
-    if not identity.is_admin and not identity.has_permission("agent:deploy"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有管理员或拥有 agent:deploy 权限的用户能确认发布操作")
+    if not identity.has_permission(PERM_DEPLOY_TRIGGER):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "没有触发发布/重启的权限")
     try:
         action = confirm_store.consume(req.confirm_id, identity.user_id)
     except KeyError:

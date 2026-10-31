@@ -13,7 +13,7 @@ import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.agent import profile as profile_store
-from app.auth import Identity, require_admin, require_agent_use
+from app.auth import Identity, require_agent_use, require_profile_manage
 from app.db import db_available
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ async def read_profile(_: Identity = Depends(require_agent_use)):
 
 
 @router.put("/profile")
-async def update_profile(payload: dict[str, Any], identity: Identity = Depends(require_admin)):
+async def update_profile(payload: dict[str, Any], identity: Identity = Depends(require_profile_manage)):
     if not db_available():
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "配置库不可用，暂不能保存")
     try:

@@ -22,9 +22,9 @@ from typing import Literal
 import anyio.to_thread
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import func
 
-from app.auth import Identity, require_admin, require_agent_use
+from app.auth import PERM_KB_MANAGE, Identity, require_agent_use, require_kb_manage
 from app.config import settings
 from app.db import db_available, session_scope
 from app.kb import embedder, ingest, store
@@ -39,6 +39,14 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 class KbCreate(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     description: str = ""
+
+
+class KbUpdate(BaseModel):
+    """管理员维护知识库：改名/描述/对普通用户是否可见。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    description: str | None = Field(default=None, max_length=255)
+    visible: bool | None = None
 
 
 class KbSearch(BaseModel):
@@ -92,9 +100,14 @@ def _doc_dict(row: AgentKbDoc) -> dict:
 # ---------------------------------------------------------------- 知识库
 
 
-def _list_kbs() -> list[dict]:
+def _list_kbs(identity: Identity) -> list[dict]:
+    can_manage = identity.has_permission(PERM_KB_MANAGE)
     with session_scope() as db:
-        rows = db.query(AgentKb).order_by(AgentKb.created_at.desc()).all()
+        query = db.query(AgentKb)
+        if not can_manage:
+            # 普通用户只看得到"对用户可见"的知识库（默认可见）
+            query = query.filter(AgentKb.visible == 1)
+        rows = query.order_by(AgentKb.created_at.desc()).all()
         docs = db.query(AgentKbDoc.kb_id, AgentKbDoc.review_status, func.count(AgentKbDoc.id)).group_by(
             AgentKbDoc.kb_id, AgentKbDoc.review_status
         )
@@ -113,6 +126,7 @@ def _list_kbs() -> list[dict]:
                 "description": row.description,
                 "embedding_model": row.embedding_model,
                 "dim": row.dim,
+                "visible": bool(row.visible),
                 "doc_count": counts.get(row.id, {}).get("doc_count", 0),
                 "approved_count": counts.get(row.id, {}).get("approved_count", 0),
                 "pending_review": counts.get(row.id, {}).get("pending_review", 0),
@@ -123,13 +137,39 @@ def _list_kbs() -> list[dict]:
 
 
 @router.get("")
-async def list_kbs(_: Identity = Depends(require_agent_use)):
+async def list_kbs(identity: Identity = Depends(require_agent_use)):
     _require_db()
-    return {"code": 0, "data": await anyio.to_thread.run_sync(_list_kbs)}
+    return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _list_kbs(identity))}
+
+
+@router.patch("/{kb_id}")
+async def update_kb(kb_id: str, payload: KbUpdate, _: Identity = Depends(require_kb_manage)):
+    """管理员维护知识库：改名/描述/是否对普通用户可见。"""
+    _require_db()
+
+    def _work() -> dict:
+        with session_scope() as db:
+            row = db.get(AgentKb, kb_id)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
+            if payload.name is not None:
+                row.name = payload.name.strip()
+            if payload.description is not None:
+                row.description = payload.description.strip()
+            if payload.visible is not None:
+                row.visible = 1 if payload.visible else 0
+            return {
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "visible": bool(row.visible),
+            }
+
+    return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
 
 
 @router.post("")
-async def create_kb(payload: KbCreate, identity: Identity = Depends(require_admin)):
+async def create_kb(payload: KbCreate, identity: Identity = Depends(require_kb_manage)):
     _require_db()
     kb_id = uuid.uuid4().hex[:32]
 
@@ -152,7 +192,7 @@ async def create_kb(payload: KbCreate, identity: Identity = Depends(require_admi
 
 
 @router.delete("/{kb_id}")
-async def delete_kb(kb_id: str, _: Identity = Depends(require_admin)):
+async def delete_kb(kb_id: str, _: Identity = Depends(require_kb_manage)):
     _require_db()
 
     def _work() -> None:
@@ -200,7 +240,7 @@ async def list_categories(_: Identity = Depends(require_agent_use)):
 
 
 @router.post("/categories")
-async def create_category(payload: CategoryCreate, identity: Identity = Depends(require_admin)):
+async def create_category(payload: CategoryCreate, identity: Identity = Depends(require_kb_manage)):
     _require_db()
     category_id = uuid.uuid4().hex[:32]
 
@@ -224,7 +264,7 @@ async def create_category(payload: CategoryCreate, identity: Identity = Depends(
 
 
 @router.patch("/categories/{category_id}")
-async def update_category(category_id: str, payload: CategoryUpdate, _: Identity = Depends(require_admin)):
+async def update_category(category_id: str, payload: CategoryUpdate, _: Identity = Depends(require_kb_manage)):
     _require_db()
 
     def _work() -> None:
@@ -251,7 +291,7 @@ async def update_category(category_id: str, payload: CategoryUpdate, _: Identity
 
 
 @router.delete("/categories/{category_id}")
-async def delete_category(category_id: str, _: Identity = Depends(require_admin)):
+async def delete_category(category_id: str, _: Identity = Depends(require_kb_manage)):
     _require_db()
 
     def _work() -> None:
@@ -270,16 +310,36 @@ async def delete_category(category_id: str, _: Identity = Depends(require_admin)
 # ---------------------------------------------------------------- 文档
 
 
+def _kb_row(db, kb_id: str, identity: Identity) -> AgentKb:
+    """取知识库；对普通用户隐藏的知识库按不存在处理（不泄漏其存在）。"""
+    row = db.get(AgentKb, kb_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
+    if not row.visible and not identity.has_permission(PERM_KB_MANAGE):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
+    return row
+
+
 def _list_docs(kb_id: str, identity: Identity, review: str = "") -> list[dict]:
+    """所有用户都能看到知识库里的全部文档（含待审核/被驳回），审核状态用徽标表达。"""
     with session_scope() as db:
+        _kb_row(db, kb_id, identity)
         query = db.query(AgentKbDoc).filter(AgentKbDoc.kb_id == kb_id)
-        if not identity.is_admin:
-            # 普通员工只看已通过的和自己上传的（含被驳回，便于改完重传）
-            query = query.filter(or_(AgentKbDoc.review_status == "approved", AgentKbDoc.created_by == identity.user_id))
         if review:
             query = query.filter(AgentKbDoc.review_status == review)
         rows = query.order_by(AgentKbDoc.created_at.desc()).all()
         return [_doc_dict(row) for row in rows]
+
+
+def _doc_detail(kb_id: str, doc_id: str, identity: Identity) -> dict:
+    with session_scope() as db:
+        _kb_row(db, kb_id, identity)
+        row = db.get(AgentKbDoc, doc_id)
+        if row is None or row.kb_id != kb_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
+        data = _doc_dict(row)
+        data["summary"] = row.error or ""
+        return data
 
 
 @router.get("/{kb_id}/docs")
@@ -290,6 +350,13 @@ async def list_docs(
 ):
     _require_db()
     return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _list_docs(kb_id, identity, review))}
+
+
+@router.get("/{kb_id}/docs/{doc_id}")
+async def doc_detail(kb_id: str, doc_id: str, identity: Identity = Depends(require_agent_use)):
+    """文档详情：所有用户都能看（所在知识库对用户隐藏时按 404）。"""
+    _require_db()
+    return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _doc_detail(kb_id, doc_id, identity))}
 
 
 @router.post("/{kb_id}/docs")
@@ -341,7 +408,7 @@ async def upload_doc(
 
 
 @router.get("/{kb_id}/review-queue")
-async def review_queue(kb_id: str, identity: Identity = Depends(require_admin)):
+async def review_queue(kb_id: str, identity: Identity = Depends(require_kb_manage)):
     """待审核队列（管理员）：所有员工上传、还没处理的文档。"""
     _require_db()
     return {
@@ -356,7 +423,7 @@ async def review_doc(
     doc_id: str,
     payload: ReviewPayload,
     background: BackgroundTasks,
-    identity: Identity = Depends(require_admin),
+    identity: Identity = Depends(require_kb_manage),
 ):
     _require_db()
 
@@ -386,7 +453,7 @@ async def review_doc(
 
 
 @router.post("/{kb_id}/docs/{doc_id}/rebuild")
-async def rebuild_doc(kb_id: str, doc_id: str, background: BackgroundTasks, _: Identity = Depends(require_admin)):
+async def rebuild_doc(kb_id: str, doc_id: str, background: BackgroundTasks, _: Identity = Depends(require_kb_manage)):
     _require_db()
 
     def _mark() -> None:
@@ -405,7 +472,7 @@ async def rebuild_doc(kb_id: str, doc_id: str, background: BackgroundTasks, _: I
 
 
 @router.post("/{kb_id}/reindex")
-async def reindex_kb(kb_id: str, background: BackgroundTasks, _: Identity = Depends(require_admin)):
+async def reindex_kb(kb_id: str, background: BackgroundTasks, _: Identity = Depends(require_kb_manage)):
     """整库重建索引：管理员按钮。只重建"已通过"的文档。"""
     _require_db()
 
@@ -426,7 +493,7 @@ async def reindex_kb(kb_id: str, background: BackgroundTasks, _: Identity = Depe
 
 
 @router.delete("/{kb_id}/docs/{doc_id}")
-async def delete_doc(kb_id: str, doc_id: str, _: Identity = Depends(require_admin)):
+async def delete_doc(kb_id: str, doc_id: str, _: Identity = Depends(require_kb_manage)):
     _require_db()
     await ingest.delete_document(doc_id)
     return {"code": 0, "msg": "deleted"}
@@ -441,9 +508,16 @@ def _doc_chunks(doc_id: str, limit: int = 200) -> list[dict]:
 
 
 @router.get("/{kb_id}/docs/{doc_id}/chunks")
-async def doc_chunks(kb_id: str, doc_id: str, _: Identity = Depends(require_admin)):
+async def doc_chunks(kb_id: str, doc_id: str, identity: Identity = Depends(require_agent_use)):
+    """切块预览：详情页正文用；隐藏知识库对普通用户按 404。"""
     _require_db()
-    return {"code": 0, "data": await anyio.to_thread.run_sync(lambda: _doc_chunks(doc_id))}
+
+    def _work() -> list[dict]:
+        with session_scope() as db:
+            _kb_row(db, kb_id, identity)
+        return _doc_chunks(doc_id)
+
+    return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
 
 
 @router.post("/search")

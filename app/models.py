@@ -73,6 +73,8 @@ class AgentKb(Base):
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     embedding_model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
+    # 对普通用户是否可见（默认可见）；隐藏只影响入口，不影响已入库向量
+    visible: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     created_by: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
 

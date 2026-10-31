@@ -31,6 +31,31 @@ HEADER_SIGNATURE = "x-fm-signature"
 
 ADMIN_ROLE = "ADMIN"
 
+# 权限码统一由用户中台维护（auth_permission / auth_role_permission），
+# agent 只消费网关透传的 X-FM-Permissions，不再自建角色判断。
+PERM_AGENT_USE = "agent.chat.use"
+PERM_KB_MANAGE = "agent.kb.manage"
+PERM_PROFILE_MANAGE = "agent.profile.manage"
+PERM_CONSOLE_VIEW = "agent.console.view"
+PERM_DEPLOY_TRIGGER = "agent.deploy.trigger"
+
+AGENT_PERMISSIONS = (
+    PERM_AGENT_USE,
+    PERM_KB_MANAGE,
+    PERM_PROFILE_MANAGE,
+    PERM_CONSOLE_VIEW,
+    PERM_DEPLOY_TRIGGER,
+)
+
+# 兼容期：早期版本用过冒号写法，用户中台迁移完成前继续认，避免升级窗口内管理员掉权限。
+LEGACY_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    PERM_AGENT_USE: ("agent:use", "agent:kb:write", "agent:admin"),
+    PERM_KB_MANAGE: ("agent:kb:write", "agent:admin"),
+    PERM_PROFILE_MANAGE: ("agent:admin", "agent:kb:write"),
+    PERM_CONSOLE_VIEW: ("agent:admin",),
+    PERM_DEPLOY_TRIGGER: ("agent:deploy", "agent:admin"),
+}
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -46,7 +71,9 @@ class Identity:
         return self.role.upper() == ADMIN_ROLE or ADMIN_ROLE in {r.upper() for r in self.roles}
 
     def has_permission(self, code: str) -> bool:
-        return code in self.permissions
+        if code in self.permissions:
+            return True
+        return any(alias in self.permissions for alias in LEGACY_PERMISSIONS.get(code, ()))
 
     @property
     def display_name(self) -> str:
@@ -103,22 +130,46 @@ def verify_signature(headers: dict[str, str]) -> Identity:
     )
 
 
+def _maybe_b64url(value: str) -> str:
+    """网关透传的 username/nickname/role 是 b64url 编码的；解密失败就按原文用。"""
+    if not value:
+        return ""
+    try:
+        decoded = _b64url_decode(value)
+    except Exception:  # noqa: BLE001
+        return value
+    return decoded if decoded.isprintable() else value
+
+
 def dev_identity(request: Request) -> Identity:
-    """开发模式身份：允许用 X-FM-User-Id / X-FM-Role 伪造，仅本机调试。"""
+    """开发模式身份：不校验签名，直接采信网关写好的身份头，仅本机调试用。
+
+    这样本地/测试环境也能走真实的用户中台权限（X-FM-Permissions 由网关按
+    auth_role_permission 下发），不需要知道 FM_IDENTITY_SECRET；
+    也支持手动传 X-FM-Permissions 验证权限边界。正式环境 dev_mode 必须关闭。
+    """
     raw_id = request.headers.get("x-fm-user-id", "1")
-    raw_role = request.headers.get("x-fm-role", ADMIN_ROLE)
     try:
         user_id = int(raw_id)
     except ValueError:
         user_id = 1
-    role = raw_role.upper() if raw_role.isascii() else ADMIN_ROLE
+
+    role = _maybe_b64url(request.headers.get("x-fm-role", "")).upper() or ADMIN_ROLE
+    roles_raw = request.headers.get("x-fm-roles", "")
+    roles = tuple(r.strip() for r in roles_raw.split(",") if r.strip()) or (role,)
+
+    raw_perms = request.headers.get("x-fm-permissions", "")
+    permissions = tuple(p.strip() for p in raw_perms.split(",") if p.strip())
+    if not permissions:
+        permissions = AGENT_PERMISSIONS if role == ADMIN_ROLE else (PERM_AGENT_USE,)
+
     return Identity(
         user_id=user_id,
-        username=f"dev-{user_id}",
-        nickname="开发者",
+        username=_maybe_b64url(request.headers.get("x-fm-username", "")) or f"dev-{user_id}",
+        nickname=_maybe_b64url(request.headers.get("x-fm-nickname", "")) or "开发者",
         role=role,
-        roles=(role,),
-        permissions=("agent:use", "agent:admin", "agent:kb:write"),
+        roles=roles,
+        permissions=permissions,
     )
 
 
@@ -128,29 +179,28 @@ async def get_identity(request: Request) -> Identity:
     return verify_signature({k.lower(): v for k, v in request.headers.items()})
 
 
-async def require_admin(request: Request) -> Identity:
-    identity = await get_identity(request)
-    if not identity.is_admin:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
-    return identity
+def require_permission(code: str, message: str):
+    """生成 FastAPI 依赖：校验用户中台下发的权限码。
 
+    权限的唯一事实来源是 tf-user 的 auth_role_permission（经网关 X-FM-Permissions 透传），
+    agent 侧不做任何角色推断，也不再维护自己的管理员判定。
+    """
 
-async def require_agent_use(request: Request) -> Identity:
-    """普通员工：能对话、能上传知识库文件（上传后要等管理员审核才进索引）。"""
-    identity = await get_identity(request)
-    allowed = (
-        identity.is_admin
-        or identity.has_permission("agent:use")
-        or identity.has_permission("agent:admin")
-        or identity.has_permission("agent:kb:write")
-    )
-    if not allowed:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "没有使用智能助手的权限")
-    return identity
-
-
-async def require_kb_write(request: Request) -> Identity:
-    identity = await get_identity(request)
-    if identity.is_admin or identity.has_permission("agent:kb:write") or identity.has_permission("agent:admin"):
+    async def dependency(request: Request) -> Identity:
+        identity = await get_identity(request)
+        if not identity.has_permission(code):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, message)
         return identity
-    raise HTTPException(status.HTTP_403_FORBIDDEN, "无权管理知识库")
+
+    dependency.__name__ = f"require_{code.replace('.', '_')}"
+    return dependency
+
+
+require_agent_use = require_permission(PERM_AGENT_USE, "没有使用智能助手的权限")
+require_kb_manage = require_permission(PERM_KB_MANAGE, "需要知识库管理权限")
+require_profile_manage = require_permission(PERM_PROFILE_MANAGE, "需要展示管理权限")
+require_admin = require_permission(PERM_CONSOLE_VIEW, "需要 Agent 管理台权限")
+require_deploy_trigger = require_permission(PERM_DEPLOY_TRIGGER, "没有触发发布/重启的权限")
+
+# 兼容旧导入名（kb.py 早期用的是 require_kb_write）
+require_kb_write = require_kb_manage

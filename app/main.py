@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 import anyio.to_thread
 from fastapi import FastAPI
 
-from app import llm, nacos
+from app import errors, llm, nacos
 from app.api import admin, chat, confirm, kb, meta, profile
 from app.config import settings
 from app.db import init_db
@@ -63,6 +63,9 @@ app.include_router(kb.router, prefix="/api/v1/agent/kb", tags=["knowledge-base"]
 app.include_router(admin.router, prefix="/api/v1/agent/admin", tags=["admin"])
 app.include_router(profile.router, prefix="/api/v1/agent", tags=["profile"])
 app.include_router(meta.router, prefix="/api/v1/agent", tags=["meta"])
+
+# 统一错误响应（标准信封 + 错误码 + traceId）与请求链路日志
+errors.install(app)
 
 
 @app.get("/healthz")

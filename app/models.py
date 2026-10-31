@@ -23,6 +23,8 @@ class AgentSession(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     scene: Mapped[str] = mapped_column(String(32), nullable=False, default="ops")
     env: Mapped[str] = mapped_column(String(8), nullable=False, default="prod")
+    # 列表展示用：取会话里第一条用户消息
+    title: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     messages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(3), nullable=False, server_default=func.now(), onupdate=func.now()

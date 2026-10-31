@@ -261,6 +261,17 @@ def _describe(tool: str, arguments: dict[str, Any]) -> str:
     return f"执行 {tool}：{json.dumps(arguments, ensure_ascii=False)[:120]}"
 
 
+def _session_title(messages: list[dict[str, Any]], limit: int = 60) -> str:
+    """会话标题：第一条用户消息，压成一行并截断。"""
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        text = " ".join(str(message.get("content") or "").split())
+        if text:
+            return text[:limit]
+    return "新会话"
+
+
 def _persist(
     session_id: str,
     user_id: int,

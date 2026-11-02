@@ -15,6 +15,7 @@ FishMatrix（摸鱼矩阵）Agent 智能助手服务 —— Python 3.13 + FastAP
 | --- | --- | --- |
 | POST | `/api/v1/agent/chat` | SSE 流式对话（`start` / `delta` / `tool` / `confirm_required` / `done` / `error`） |
 | POST | `/api/v1/agent/confirm` | 确认写操作（发布 / 重启），60 秒内有效，仅本人可确认 |
+| GET | `/api/v1/agent/chat-identity` | 聊天服务取展示名做「@名字」触发词（只校验网关签名，不要求 `agent.chat.use`） |
 | GET/POST/PUT/DELETE | `/api/v1/agent/kb/**` | 知识库、文档上传、重建、分块预览、检索 |
 | GET | `/api/v1/agent/admin/tool-calls` | 工具调用流水 |
 | GET/PUT | `/api/v1/agent/admin/tools` | 工具开关、超时、允许角色 |

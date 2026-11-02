@@ -91,6 +91,10 @@ class Settings:
     llm_model: str = field(default_factory=lambda: _env("FM_LLM_MODEL", "qwen2.5-7b-instruct"))
     llm_connect_timeout: float = field(default_factory=lambda: _float("FM_LLM_CONNECT_TIMEOUT", 5.0))
     llm_read_timeout: float = field(default_factory=lambda: _float("FM_LLM_READ_TIMEOUT", 180.0))
+    # vLLM --max-model-len，8192 是"输入 + 输出"的总预算，不是只限输入
+    llm_context_tokens: int = field(default_factory=lambda: _int("FM_LLM_CONTEXT_TOKENS", 8192))
+    # 单轮最多重试次数（只在还没吐出任何 delta 时重试，避免前端收到重复内容）
+    llm_retries: int = field(default_factory=lambda: _int("FM_LLM_RETRIES", 1))
 
     # 编排
     max_concurrency: int = field(default_factory=lambda: _int("FM_AGENT_MAX_CONCURRENCY", 2))
@@ -102,6 +106,10 @@ class Settings:
     max_input_chars: int = field(default_factory=lambda: _int("FM_AGENT_MAX_INPUT_CHARS", 6000))
     history_limit: int = field(default_factory=lambda: _int("FM_AGENT_HISTORY_LIMIT", 10))
     rate_limit_per_minute: int = field(default_factory=lambda: _int("FM_AGENT_RPM", 10))
+    # 同一轮的多个只读工具并发执行上限（Loki / MySQL / ES 各一个连接，别打爆）
+    tool_parallelism: int = field(default_factory=lambda: _int("FM_AGENT_TOOL_PARALLELISM", 3))
+    # SSE 心跳间隔（秒）：长工具调用期间防止网关/浏览器空闲断连
+    sse_heartbeat_seconds: float = field(default_factory=lambda: _float("FM_AGENT_SSE_HEARTBEAT", 10.0))
 
     # 审计库
     mysql_dsn: str = field(
@@ -183,6 +191,8 @@ class Settings:
     # 网关身份
     identity_secret: str = field(default_factory=lambda: _env("FM_IDENTITY_SECRET"))
     identity_ttl: int = field(default_factory=lambda: _int("FM_IDENTITY_TTL_SECONDS", 120))
+    # 确认令牌签名密钥：不配就复用网关密钥，再没有就用开发默认值（仅本地）
+    confirm_secret: str = field(default_factory=lambda: _env("FM_CONFIRM_SECRET"))
 
     # 默认环境（prod/test 共用一个实例，工具参数带 env）
     default_env: str = field(default_factory=lambda: _env("FM_AGENT_DEFAULT_ENV", "prod"))

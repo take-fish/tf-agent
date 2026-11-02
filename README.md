@@ -35,6 +35,9 @@ FishMatrix（摸鱼矩阵）Agent 智能助手服务 —— Python 3.13 + FastAP
 | `trigger_release` | 写 | 触发发布流水线（workflow_dispatch），需确认 |
 | `restart_service` | 写 | 重启服务（service / 环境），需确认 |
 
+写工具标了 `requires_config`：管理台没配过（`agent_tool_config` 无记录或 `enabled=0`）时不会出现在模型面前，
+避免"调了才报错"白烧一轮。新库迁移后需要管理员在管理台启用发布 / 重启工具。
+
 ## 本地开发（uv 管理依赖）
 
 ```bash
@@ -68,10 +71,26 @@ docker build -t tf-agent .
 
 ## 关键约束
 
-- **必须单 worker**：并发信号量在进程内，多 worker 会让 `max_concurrency` 失效。
-- **8192 上下文是硬顶**：历史最多 10 条消息、知识库最多 5 个片段，超了会挤掉工具结果。
-- **写操作二次确认**：模型只能发起，执行要管理台点头，审计记录确认人。
+- **必须单 worker**：入口并发闸门在进程内，多 worker 会让 `max_concurrency` 失效。
+- **8192 是"输入 + 输出"的总预算**：按「历史条数 → 整块丢弃旧轮次 → 工具结果按行截断」三层降级，
+  不会把 prompt 顶到 vLLM 报 400；最后一轮不传工具，强制模型给出总结。
+- **写操作二次确认**：模型只能发起；确认凭证是无状态 HMAC 令牌（重启不丢、防篡改、防重放），
+  执行要管理台点头，审计记录确认人。
+- **知识库"隐藏"= 不在列表 / 详情里展示**，文档仍参与检索；它不是权限，不要当访问控制用。
 - **降级不阻断**：MySQL / Loki / Nacos 任一不可用都只让对应工具报错，服务照常对话。
+
+## 可观测
+
+- `GET /api/v1/agent/metrics`（Prometheus）：对话数、工具耗时 / 成败、模型每轮耗时、prompt / completion token。
+- `agent_tool_call`：每次工具调用的参数摘要 / 行数 / 耗时；
+  `agent_llm_call`：每轮模型调用的 token 与耗时（用于算成本、找慢轮次）。
+- SSE 长任务期间每 10 秒发一行 `: ping` 注释保活，客户端可忽略。
+
+## 升级注意
+
+- 新增表结构后必须先跑迁移再重启业务容器：
+  `uv run python -m app.migrate`（V8 起有 `agent_llm_call`）。
+  没跑迁移时审计库会整体降级（对话仍可用，会话与审计不落库）。
 
 ## 分支模型
 

@@ -71,6 +71,10 @@ def allowed_tools(identity, scene_tools: list[str] | None = None) -> list[ToolSp
         if scene_tools is not None and spec.name not in scene_tools:
             continue
         cfg = configs.get(spec.name)
+        # requires_config 的工具（发布 / 重启）必须在管理台配过才允许出现，
+        # 否则模型会看到"调了才报错"的工具，白浪费一轮。
+        if spec.requires_config and cfg is None:
+            continue
         if cfg is not None:
             if not cfg["enabled"]:
                 continue

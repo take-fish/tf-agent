@@ -70,3 +70,42 @@ async def record(
             confirmed_by=confirmed_by,
         )
     )
+
+
+def _write_llm(**kwargs: Any) -> None:
+    try:
+        from app.db import db_available, session_scope
+        from app.models import AgentLlmCall
+
+        if not db_available():
+            return
+        with session_scope() as db:
+            db.add(AgentLlmCall(**kwargs))
+    except Exception as exc:  # noqa: BLE001 - 指标写失败不影响对话
+        logger.warning("LLM 流水写入失败：%s", exc)
+
+
+async def record_llm(
+    *,
+    trace_id: str,
+    user_id: int,
+    scene: str,
+    round_index: int,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    ms: int,
+) -> None:
+    """一次模型轮次的 token / 耗时流水。"""
+    await anyio.to_thread.run_sync(
+        lambda: _write_llm(
+            trace_id=trace_id[:32],
+            user_id=user_id,
+            scene=scene[:32],
+            round=round_index,
+            model=model[:64],
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ms=ms,
+        )
+    )

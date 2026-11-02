@@ -2,10 +2,14 @@
 
 只做两件事：把消息发给模型、把流式 chunk 装配成"文本增量"或"工具调用"。
 编排逻辑不在这里（见 app/agent/loop.py）。
+
+重试策略：只在**还没有吐出任何 delta** 之前重试（连接失败、5xx、首包超时），
+一旦流已经开始，重试会让前端收到重复正文，所以直接抛错。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -22,6 +26,11 @@ _client: httpx.AsyncClient | None = None
 
 class LLMError(RuntimeError):
     """模型侧失败（连接、超时、非 2xx）。"""
+
+
+def _retryable(exc: LLMError) -> bool:
+    """4xx 是请求本身有问题（例如 prompt 超长），重试只会白烧一次。"""
+    return "模型返回 4" not in str(exc)
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -56,34 +65,8 @@ async def list_models() -> list[str]:
         raise LLMError(f"模型列表获取失败: {exc}") from exc
 
 
-async def stream_round(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
-    *,
-    temperature: float = 0.2,
-    max_tokens: int | None = None,
-    tool_choice: str = "auto",
-) -> AsyncIterator[tuple[str, Any]]:
-    """跑一轮模型推理。
-
-    产出事件：
-      ("delta", str)          —— 正文增量，直接转发给前端
-      ("tool_calls", list)    —— 本轮要执行的工具（已装配完整参数）
-      ("usage", dict)         —— token 用量
-      ("end", str)            —— 本轮结束，携带完整正文
-    """
-    payload: dict[str, Any] = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-        "temperature": temperature,
-        "max_tokens": max_tokens or settings.max_tokens,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = tool_choice
-
+async def _stream_once(payload: dict[str, Any]) -> AsyncIterator[tuple[str, Any]]:
+    """真正的一轮流式推理，不重试。"""
     slots: dict[int, dict[str, Any]] = {}
     content_parts: list[str] = []
     finish_reason: str | None = None
@@ -139,6 +122,51 @@ async def stream_round(
         logger.info("本轮工具调用 finish=%s calls=%s", finish_reason, [c["name"] for c in calls])
         yield ("tool_calls", calls)
     yield ("end", "".join(content_parts))
+
+
+async def stream_round(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+    tool_choice: str = "auto",
+) -> AsyncIterator[tuple[str, Any]]:
+    """跑一轮模型推理，首包前失败自动重试 `settings.llm_retries` 次。
+
+    产出事件：
+      ("delta", str)          —— 正文增量，直接转发给前端
+      ("tool_calls", list)    —— 本轮要执行的工具（已装配完整参数）
+      ("usage", dict)         —— token 用量
+      ("end", str)            —— 本轮结束，携带完整正文
+    """
+    payload: dict[str, Any] = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "temperature": temperature,
+        "max_tokens": max_tokens or settings.max_tokens,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+
+    retries = max(0, settings.llm_retries)
+    attempt = 0
+    while True:
+        started = False
+        try:
+            async for item in _stream_once(payload):
+                started = True
+                yield item
+            return
+        except LLMError as exc:
+            if started or attempt >= retries or not _retryable(exc):
+                raise
+            attempt += 1
+            logger.warning("模型调用失败，重试 %s/%s：%s", attempt, retries, exc)
+            await asyncio.sleep(0.5 * attempt)
 
 
 async def complete(

@@ -6,7 +6,7 @@ import logging
 
 import anyio.to_thread
 from fastapi import APIRouter, Depends, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app import llm, nacos
 from app.agent import prompt
@@ -14,13 +14,13 @@ from app.auth import Identity, get_identity
 from app.config import settings
 from app.db import db_available
 from app.kb import store
+from app.metrics import CHAT_REQUESTS, TOOL_CALLS
 from app.tools import registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-CHAT_REQUESTS = Counter("fm_agent_chat_requests_total", "对话请求数")
-TOOL_CALLS = Counter("fm_agent_tool_calls_total", "工具调用数", ["tool", "ok"])
+__all__ = ["CHAT_REQUESTS", "TOOL_CALLS", "router"]
 
 
 @router.get("/tools")

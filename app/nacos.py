@@ -78,6 +78,21 @@ def kb_param(name: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def concurrency(name: str, default: int) -> int:
+    """并发 / 队列类参数（agent.concurrency.*）。"""
+    value = runtime().concurrency.get(name)
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def write_operation(name: str, default: Any) -> Any:
+    """写操作开关（agent.write-operations.*），例如 require-confirm / confirm-ttl-seconds。"""
+    value = runtime().write_operations.get(name)
+    return default if value is None else value
+
+
 class NacosClient:
     """极简客户端：只用 HTTP 开放接口，不引入 Nacos SDK。"""
 

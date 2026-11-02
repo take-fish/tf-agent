@@ -83,6 +83,27 @@ def test_registry_filters_by_scene(monkeypatch):
     assert {s.name for s in specs} == {"search_logs", "search_kb"}
 
 
+def test_requires_config_tool_hidden_until_configured(monkeypatch):
+    class FakeIdentity:
+        user_id = 1
+        role = "ADMIN"
+        roles = ("ADMIN",)
+        permissions = ()
+        is_admin = True
+
+    monkeypatch.setattr(registry, "load_configs", lambda force=False: {})
+    assert registry.allowed_tools(FakeIdentity(), ["trigger_release"]) == []
+
+    monkeypatch.setattr(
+        registry,
+        "load_configs",
+        lambda force=False: {
+            "trigger_release": {"enabled": True, "timeout_ms": 30000, "roles": [], "params": {}},
+        },
+    )
+    assert [spec.name for spec in registry.allowed_tools(FakeIdentity(), ["trigger_release"])] == ["trigger_release"]
+
+
 def test_obj_schema_requires():
     schema = obj_schema({"a": {"type": "string"}}, ["a"])
     assert schema["required"] == ["a"]

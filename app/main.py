@@ -32,8 +32,17 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     register_all()
     init_db()
-    # 嵌入模型预热放后台，不阻塞端口监听
-    asyncio.create_task(anyio.to_thread.run_sync(embedder.warmup))
+    # 嵌入模型预热放后台，不阻塞端口监听；任务留引用并回收异常，否则失败只在 GC 时告警
+    warmup = asyncio.create_task(anyio.to_thread.run_sync(embedder.warmup))
+
+    def _report_warmup(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("嵌入模型预热失败（检索会用冷启动兜底）：%s", exc)
+
+    warmup.add_done_callback(_report_warmup)
     # Nacos：拉配置 + 注册实例；连不上就降级（用默认参数、网关走静态兜底）
     nacos_runtime = nacos.manager()
     try:

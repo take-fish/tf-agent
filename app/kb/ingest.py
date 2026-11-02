@@ -10,6 +10,7 @@ from pathlib import Path
 
 import anyio.to_thread
 
+from app import nacos
 from app.config import settings
 from app.db import session_scope
 from app.kb import embedder, store
@@ -81,8 +82,8 @@ def _pack(block: str, size: int, overlap: int) -> list[str]:
 
 
 def chunk_text(text: str, size: int | None = None, overlap: int | None = None) -> list[str]:
-    size = size or settings.chunk_size
-    overlap = overlap or settings.chunk_overlap
+    size = size or int(nacos.kb_param("chunk-size", settings.chunk_size))
+    overlap = overlap or int(nacos.kb_param("chunk-overlap", settings.chunk_overlap))
     text = text.replace("\r\n", "\n").strip()
     if not text:
         return []

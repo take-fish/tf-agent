@@ -51,6 +51,23 @@ class AgentToolCall(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
 
 
+class AgentLlmCall(Base):
+    """LLM 轮次流水：token 用量 + 耗时，用来回答"这次回答花了多少"。"""
+
+    __tablename__ = "agent_llm_call"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    trace_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    scene: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
+
+
 class AgentToolConfig(Base):
     """工具配置：管理台可改，agent 缓存 30s 读取。"""
 
@@ -88,7 +105,9 @@ class AgentKbDoc(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     # 解析后的正文：支持在线编辑（改完重新切块），为空时回落解析原始文件
     content: Mapped[str | None] = mapped_column(LONGTEXT, nullable=True)
-    # 对普通用户是否可见（默认可见）；隐藏只影响列表/详情，不影响已入库向量
+    # 对普通用户是否在列表 / 详情里展示（默认展示）。
+    # 注意：隐藏只是"不展示"，文档仍然在向量库里、照常参与 search_kb 检索——
+    # 它表达的是展示偏好，不是检索权限，不要拿它当访问控制用。
     visible: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     source: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     format: Mapped[str] = mapped_column(String(16), nullable=False, default="txt")

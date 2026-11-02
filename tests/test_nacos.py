@@ -28,6 +28,9 @@ agent:
   knowledge-base:
     top-k: 5
     chunk-size: 400
+  write-operations:
+    require-confirm: false
+    confirm-ttl-seconds: 30
 """
 
 
@@ -82,3 +85,13 @@ def test_kb_param_prefers_remote():
     assert nacos.kb_param("chunk-size", 500) == 500
     nacos.set_runtime(nacos.RuntimeConfig.from_yaml(CONFIG))
     assert nacos.kb_param("chunk-size", 500) == 400
+
+
+def test_concurrency_and_write_operation_helpers():
+    assert nacos.concurrency("max-concurrency", 2) == 2
+    assert nacos.write_operation("require-confirm", True) is True
+
+    nacos.set_runtime(nacos.RuntimeConfig.from_yaml(CONFIG))
+    assert nacos.concurrency("max-concurrency", 2) == 1
+    assert nacos.write_operation("require-confirm", True) is False
+    assert nacos.write_operation("confirm-ttl-seconds", 60) == 30

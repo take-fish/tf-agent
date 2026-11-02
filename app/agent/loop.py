@@ -1,4 +1,11 @@
-"""AgentLoop：模型 ⇄ 工具，最多 N 轮；写操作在此处被拦成"待确认"。"""
+"""AgentLoop：模型 ⇄ 工具，最多 N 轮 + 1 轮强制收尾；写操作在此处被拦成"待确认"。
+
+轮次设计：前 N 轮允许工具调用，第 N+1 轮**不传 tools**，逼模型把已有结果总结成答案。
+这样即使模型在第 N 轮还在要工具，用户也不会拿到空回复。
+
+并发设计：同一轮的多个只读工具用 asyncio.gather 并发执行（受 tool_parallelism 限制），
+写工具在确认模式下不执行，只生成确认令牌。
+"""
 
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ from app import audit, nacos
 from app.agent import confirm_store, context, prompt
 from app.config import settings
 from app.llm import LLMError, stream_round
+from app.metrics import LLM_ROUND_SECONDS, LLM_TOKENS, TOOL_CALLS, TOOL_SECONDS
 from app.tools import registry
 
 logger = logging.getLogger(__name__)
@@ -42,6 +50,13 @@ def _effective_env(arguments: dict[str, Any], default: str) -> str:
     return value if value in {"prod", "test"} else default
 
 
+def _require_confirm() -> bool:
+    value = nacos.write_operation("require-confirm", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 async def _execute(spec, arguments: dict[str, Any], env: str) -> tuple[Any, int]:
     """执行工具，返回 (ToolResult, 耗时 ms)。"""
     start = time.perf_counter()
@@ -52,6 +67,90 @@ async def _execute(spec, arguments: dict[str, Any], env: str) -> tuple[Any, int]
     timeout = registry.timeout_for(spec.name)
     result = await asyncio.wait_for(spec.handler(**kwargs), timeout=timeout)
     return result, int((time.perf_counter() - start) * 1000)
+
+
+class _Outcome:
+    """一次工具执行的完整结果（成功或失败），供并发 gather 汇总。"""
+
+    __slots__ = ("call", "spec", "arguments", "result", "ms", "error")
+
+    def __init__(self, call: dict[str, Any]) -> None:
+        self.call = call
+        self.spec = registry.get(call.get("name") or "")
+        self.arguments: dict[str, Any] = {}
+        self.result: Any = None
+        self.ms = 0
+        self.error = ""
+
+    @property
+    def call_id(self) -> str:
+        return str(self.call.get("id") or "")
+
+    @property
+    def name(self) -> str:
+        return self.spec.name if self.spec is not None else str(self.call.get("name") or "")
+
+
+async def _run_one(call: dict[str, Any], env: str, sem: asyncio.Semaphore) -> _Outcome:
+    """执行单个工具；异常不外抛，统一收敛成 outcome.error。"""
+    outcome = _Outcome(call)
+    if outcome.spec is None:
+        outcome.error = f"工具 {call.get('name')} 不存在"
+        return outcome
+    try:
+        outcome.arguments = _parse_args(call.get("arguments") or "")
+    except ValueError as exc:
+        outcome.error = str(exc)
+        return outcome
+
+    async with sem:
+        try:
+            result, ms = await _execute(outcome.spec, outcome.arguments, env)
+        except TimeoutError:
+            outcome.ms = 0
+            outcome.error = f"工具 {outcome.name} 超时"
+            return outcome
+        except Exception as exc:  # noqa: BLE001 - 工具异常要回喂模型，不中断对话
+            logger.exception("工具 %s 执行失败", outcome.name)
+            outcome.error = f"工具 {outcome.name} 执行失败：{exc}"
+            return outcome
+    outcome.result = result
+    outcome.ms = ms
+    return outcome
+
+
+async def _save_session(
+    session_id: str,
+    user_id: int,
+    scene: str,
+    env: str,
+    history: list[dict[str, Any]],
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    """会话落库（失败不阻断对话）。"""
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: _persist(session_id, user_id, scene, env, history, user_text, assistant_text)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话保存失败 %s: %s", session_id, exc)
+
+
+async def _save_partial(
+    *,
+    session_id: str,
+    identity,
+    scene,
+    env: str,
+    history: list[dict[str, Any]],
+    user_text: str,
+    final_text: str,
+) -> None:
+    """超时 / 模型报错时也要把已问的问题和半截回答存下来。"""
+    if not session_id:
+        return
+    await _save_session(session_id, identity.user_id, scene.name, env, history, user_text, final_text)
 
 
 async def stream_agent(
@@ -68,12 +167,17 @@ async def stream_agent(
     # 场景没限定工具（auto）时，把用户有权限的工具全部交给模型自己挑
     tools = registry.allowed_tools(identity, scene.tools or None)
     tool_schemas = [spec.schema() for spec in tools] or None
+    max_tokens = nacos.limit("max-tokens", scene.max_tokens)
     system = prompt.build_system_prompt(scene, env=env, user_name=identity.display_name)
+    # 工具 schema 也占上下文，按字符粗估后一并预留
+    schema_tokens = context.est_tokens(json.dumps(tool_schemas, ensure_ascii=False)) if tool_schemas else 0
     messages = context.build_round_messages(
         system,
         context.trim_history(history, nacos.limit("history-limit", settings.history_limit)),
         user_text,
         nacos.limit("max-input-chars", settings.max_input_chars),
+        max_context_tokens=settings.llm_context_tokens,
+        reserve_tokens=max_tokens + schema_tokens + 128,
     )
 
     yield {"type": "start", "trace_id": trace_id, "scene": scene.name, "env": env, "tools": [t.name for t in tools]}
@@ -81,170 +185,236 @@ async def stream_agent(
     final_text = ""
     usage: dict[str, Any] = {}
     deadline = time.monotonic() + settings.request_timeout
-    max_rounds = nacos.limit("max-tool-rounds", settings.max_tool_rounds)
+    max_rounds = max(1, nacos.limit("max-tool-rounds", settings.max_tool_rounds))
+    total_rounds = max_rounds + 1  # 最后一轮不传 tools，强制总结
+    tool_sem = asyncio.Semaphore(max(1, settings.tool_parallelism))
 
-    for round_index in range(max_rounds):
+    for round_index in range(total_rounds):
         if time.monotonic() > deadline:
             yield {"type": "error", "message": "本次请求超时，请缩小问题范围后重试"}
+            await _save_partial(
+                session_id=session_id,
+                identity=identity,
+                scene=scene,
+                env=env,
+                history=history,
+                user_text=user_text,
+                final_text=final_text,
+            )
             return
 
+        allow_tools = round_index < max_rounds
         calls: list[dict[str, Any]] | None = None
+        round_usage: dict[str, Any] = {}
+        round_started = time.perf_counter()
         try:
-            async for kind, payload in stream_round(
-                messages,
-                tool_schemas,
-                temperature=scene.temperature,
-                max_tokens=scene.max_tokens,
-            ):
-                if kind == "delta":
-                    final_text += payload
-                    yield {"type": "delta", "text": payload}
-                elif kind == "usage":
-                    usage = payload
-                elif kind == "tool_calls":
-                    calls = payload
+            remaining = max(1.0, deadline - time.monotonic())
+            async with asyncio.timeout(remaining):
+                async for kind, payload in stream_round(
+                    messages,
+                    tool_schemas if allow_tools else None,
+                    temperature=scene.temperature,
+                    max_tokens=max_tokens,
+                ):
+                    if kind == "delta":
+                        final_text += payload
+                        yield {"type": "delta", "text": payload}
+                    elif kind == "usage":
+                        round_usage = payload or {}
+                    elif kind == "tool_calls":
+                        calls = payload
+        except TimeoutError:
+            LLM_ROUND_SECONDS.observe(time.perf_counter() - round_started)
+            yield {"type": "error", "message": "本次请求超时，请缩小问题范围后重试"}
+            await _save_partial(
+                session_id=session_id,
+                identity=identity,
+                scene=scene,
+                env=env,
+                history=history,
+                user_text=user_text,
+                final_text=final_text,
+            )
+            return
         except LLMError as exc:
+            LLM_ROUND_SECONDS.observe(time.perf_counter() - round_started)
             logger.warning("模型调用失败：%s", exc)
             yield {"type": "error", "message": str(exc)}
+            await _save_partial(
+                session_id=session_id,
+                identity=identity,
+                scene=scene,
+                env=env,
+                history=history,
+                user_text=user_text,
+                final_text=final_text,
+            )
             return
+
+        round_ms = int((time.perf_counter() - round_started) * 1000)
+        LLM_ROUND_SECONDS.observe(round_ms / 1000)
+        prompt_tokens = int(round_usage.get("prompt_tokens") or 0)
+        completion_tokens = int(round_usage.get("completion_tokens") or 0)
+        if round_usage:
+            usage = round_usage
+            LLM_TOKENS.labels(direction="prompt").inc(prompt_tokens)
+            LLM_TOKENS.labels(direction="completion").inc(completion_tokens)
+        await audit.record_llm(
+            trace_id=trace_id,
+            user_id=identity.user_id,
+            scene=scene.name,
+            round_index=round_index,
+            model=settings.llm_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ms=round_ms,
+        )
 
         if not calls:
             break
 
-        # ---- 写操作：拦下来，转成确认请求 ----
-        write_call = None
-        for call in calls:
-            spec = registry.get(call["name"])
-            if spec is not None and not spec.read_only:
-                write_call = call
-                break
-        if write_call is not None:
-            spec = registry.get(write_call["name"])
-            try:
-                arguments = _parse_args(write_call["arguments"])
-            except ValueError as exc:
-                yield {"type": "error", "message": str(exc)}
-                return
-            action = confirm_store.create(
-                tool=spec.name,
-                arguments=arguments,
-                user_id=identity.user_id,
-                trace_id=trace_id,
-                env=_effective_env(arguments, env),
-                scene=scene.name,
-                description=_describe(spec.name, arguments),
-            )
-            await audit.record(
-                trace_id=trace_id,
-                user_id=identity.user_id,
-                scene=scene.name,
-                env=_effective_env(arguments, env),
-                tool=spec.name,
-                arguments=arguments,
-                ok=True,
-                rows=0,
-                ms=0,
-                need_confirm=True,
-            )
-            yield {
-                "type": "confirm_required",
-                "confirm_id": action.confirm_id,
-                "tool": spec.name,
-                "args": arguments,
-                "description": action.description,
-                "expires_in": confirm_store.TTL_SECONDS,
-            }
-            yield {
-                "type": "done",
-                "text": final_text,
-                "usage": usage,
-                "session_id": session_id,
-                "pending_confirm": True,
-            }
-            return
+        if not allow_tools:
+            # 最后一轮没有给 tools，模型理论上不会要求调用；真出现也忽略，避免绕过确认
+            break
 
-        # ---- 只读工具：串行执行 ----
-        messages.append(context.tool_call_message(calls))
-        results: list[tuple[str, str]] = []
-        for call in calls:
-            spec = registry.get(call["name"])
-            if spec is None:
-                results.append((call["id"], f"工具 {call['name']} 不存在"))
-                continue
-            try:
-                arguments = _parse_args(call["arguments"])
-            except ValueError as exc:
-                results.append((call["id"], str(exc)))
-                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error", "message": str(exc)}
-                continue
+        for idx, call in enumerate(calls):
+            if not call.get("id"):
+                call["id"] = f"call_{idx}"
 
-            yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "running", "args": arguments}
-            try:
-                result, ms = await _execute(spec, arguments, env)
-            except TimeoutError:
-                result, ms = None, 0
-                results.append((call["id"], f"工具 {spec.name} 超时"))
+        # ---- 写操作：确认模式下拦下来，转成确认请求 ----
+        write_pending = [
+            call for call in calls if (spec := registry.get(call.get("name") or "")) is not None and not spec.read_only
+        ]
+        confirm_mode = bool(write_pending) and _require_confirm()
+        write_ids = {id(call) for call in write_pending}
+        to_run = [call for call in calls if id(call) not in write_ids] if confirm_mode else list(calls)
+
+        if to_run:
+            messages.append(context.tool_call_message(to_run))
+            for call in to_run:
+                outcome = _Outcome(call)
+                try:
+                    preview = _parse_args(call.get("arguments") or "")
+                except ValueError:
+                    preview = {}
+                yield {
+                    "type": "tool",
+                    "call_id": outcome.call_id,
+                    "name": outcome.name,
+                    "status": "running",
+                    "args": preview,
+                }
+            outcomes = await asyncio.gather(*[_run_one(call, env, tool_sem) for call in to_run])
+            results: list[tuple[str, str]] = []
+            for outcome in outcomes:
+                TOOL_SECONDS.labels(tool=outcome.name).observe(outcome.ms / 1000)
+                TOOL_CALLS.labels(tool=outcome.name, ok="0" if outcome.error else "1").inc()
+                if outcome.error:
+                    results.append((outcome.call_id, outcome.error))
+                    await audit.record(
+                        trace_id=trace_id,
+                        user_id=identity.user_id,
+                        scene=scene.name,
+                        env=_effective_env(outcome.arguments, env),
+                        tool=outcome.name,
+                        arguments=outcome.arguments,
+                        ok=False,
+                        rows=0,
+                        ms=outcome.ms,
+                    )
+                    yield {
+                        "type": "tool",
+                        "call_id": outcome.call_id,
+                        "name": outcome.name,
+                        "status": "error",
+                        "message": outcome.error,
+                    }
+                    continue
+                results.append((outcome.call_id, outcome.result.text))
                 await audit.record(
                     trace_id=trace_id,
                     user_id=identity.user_id,
                     scene=scene.name,
-                    env=_effective_env(arguments, env),
-                    tool=spec.name,
-                    arguments=arguments,
-                    ok=False,
-                    rows=0,
-                    ms=0,
+                    env=_effective_env(outcome.arguments, env),
+                    tool=outcome.name,
+                    arguments=outcome.arguments,
+                    ok=outcome.result.ok,
+                    rows=outcome.result.rows,
+                    ms=outcome.ms,
                 )
                 yield {
                     "type": "tool",
-                    "call_id": call["id"],
-                    "name": spec.name,
-                    "status": "error",
-                    "message": "执行超时",
+                    "call_id": outcome.call_id,
+                    "name": outcome.name,
+                    "status": "done",
+                    "ok": outcome.result.ok,
+                    "rows": outcome.result.rows,
+                    "ms": outcome.ms,
+                    "data": outcome.result.data,
                 }
-                continue
-            except Exception as exc:  # noqa: BLE001 - 工具异常要回喂模型，不中断对话
-                logger.exception("工具 %s 执行失败", spec.name)
-                results.append((call["id"], f"工具 {spec.name} 执行失败：{exc}"))
-                await audit.record(
-                    trace_id=trace_id,
-                    user_id=identity.user_id,
-                    scene=scene.name,
-                    env=_effective_env(arguments, env),
-                    tool=spec.name,
-                    arguments=arguments,
-                    ok=False,
-                    rows=0,
-                    ms=0,
-                )
-                yield {"type": "tool", "call_id": call["id"], "name": spec.name, "status": "error", "message": str(exc)}
-                continue
+            messages.extend(context.tool_result_messages(results))
+            # 工具结果可能把窗口顶爆：再压一次，确保下一轮还塞得下
+            context.fit_messages(messages, settings.llm_context_tokens, max_tokens + schema_tokens + 128)
+            logger.info("第 %s 轮工具执行完成，共 %s 个", round_index + 1, len(outcomes))
 
-            results.append((call["id"], result.text))
-            await audit.record(
-                trace_id=trace_id,
-                user_id=identity.user_id,
-                scene=scene.name,
-                env=_effective_env(arguments, env),
-                tool=spec.name,
-                arguments=arguments,
-                ok=result.ok,
-                rows=result.rows,
-                ms=ms,
+        if not confirm_mode:
+            continue
+
+        # 只确认第一个写调用；同一轮里其余写调用丢弃（正常模型不会这么干）
+        write_call = write_pending[0]
+        spec = registry.get(write_call.get("name") or "")
+        try:
+            arguments = _parse_args(write_call.get("arguments") or "")
+        except ValueError as exc:
+            yield {"type": "error", "message": str(exc)}
+            await _save_partial(
+                session_id=session_id,
+                identity=identity,
+                scene=scene,
+                env=env,
+                history=history,
+                user_text=user_text,
+                final_text=final_text,
             )
-            yield {
-                "type": "tool",
-                "call_id": call["id"],
-                "name": spec.name,
-                "status": "done",
-                "ok": result.ok,
-                "rows": result.rows,
-                "ms": ms,
-                "data": result.data,
-            }
-
-        messages.extend(context.tool_result_messages(results))
-        logger.info("第 %s 轮工具执行完成，共 %s 个", round_index + 1, len(calls))
+            return
+        action = confirm_store.create(
+            tool=spec.name,
+            arguments=arguments,
+            user_id=identity.user_id,
+            trace_id=trace_id,
+            env=_effective_env(arguments, env),
+            scene=scene.name,
+            description=_describe(spec.name, arguments),
+        )
+        await audit.record(
+            trace_id=trace_id,
+            user_id=identity.user_id,
+            scene=scene.name,
+            env=_effective_env(arguments, env),
+            tool=spec.name,
+            arguments=arguments,
+            ok=True,
+            rows=0,
+            ms=0,
+            need_confirm=True,
+        )
+        yield {
+            "type": "confirm_required",
+            "confirm_id": action.confirm_id,
+            "tool": spec.name,
+            "args": arguments,
+            "description": action.description,
+            "expires_in": confirm_store.ttl_seconds(),
+        }
+        await _save_session(session_id, identity.user_id, scene.name, env, history, user_text, final_text)
+        yield {
+            "type": "done",
+            "text": final_text,
+            "usage": usage,
+            "session_id": session_id,
+            "pending_confirm": True,
+        }
+        return
 
     await _save_session(session_id, identity.user_id, scene.name, env, history, user_text, final_text)
     yield {"type": "done", "text": final_text, "usage": usage, "session_id": session_id}
@@ -261,17 +431,6 @@ def _describe(tool: str, arguments: dict[str, Any]) -> str:
     return f"执行 {tool}：{json.dumps(arguments, ensure_ascii=False)[:120]}"
 
 
-def _session_title(messages: list[dict[str, Any]], limit: int = 60) -> str:
-    """会话标题：第一条用户消息，压成一行并截断。"""
-    for message in messages:
-        if message.get("role") != "user":
-            continue
-        text = " ".join(str(message.get("content") or "").split())
-        if text:
-            return text[:limit]
-    return "新会话"
-
-
 def _persist(
     session_id: str,
     user_id: int,
@@ -281,7 +440,7 @@ def _persist(
     user_text: str,
     assistant_text: str,
 ) -> None:
-    """会话落库并裁到最近 N 条。"""
+    """会话落库并裁到最近 N 条；正文按上限压缩，避免长文把窗口顶爆。"""
     try:
         from app.db import db_available, session_scope
         from app.models import AgentSession
@@ -289,9 +448,11 @@ def _persist(
         if not db_available():
             return
         messages = list(history)
-        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "user", "content": context.cap_text(user_text, context.HISTORY_MESSAGE_MAX_CHARS)})
         if assistant_text:
-            messages.append({"role": "assistant", "content": assistant_text})
+            messages.append(
+                {"role": "assistant", "content": context.cap_text(assistant_text, context.HISTORY_MESSAGE_MAX_CHARS)}
+            )
         messages = messages[-settings.history_limit :]
 
         with session_scope() as db:
@@ -305,20 +466,6 @@ def _persist(
                 row.messages = messages
     except Exception as exc:  # noqa: BLE001
         logger.warning("会话保存失败 %s: %s", session_id, exc)
-
-
-async def _save_session(
-    session_id: str,
-    user_id: int,
-    scene: str,
-    env: str,
-    history: list[dict[str, Any]],
-    user_text: str,
-    assistant_text: str,
-) -> None:
-    await anyio.to_thread.run_sync(
-        lambda: _persist(session_id, user_id, scene, env, history, user_text, assistant_text)
-    )
 
 
 async def execute_confirmed(action: confirm_store.PendingAction, identity) -> AsyncIterator[dict[str, Any]]:

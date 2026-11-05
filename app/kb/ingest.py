@@ -38,22 +38,49 @@ def extract_text(data: bytes, fmt: str) -> str:
     raise ValueError(f"不支持的格式：{fmt}")
 
 
-_HEADING = re.compile(r"^#{1,6}\s+\S")
+_HEADING = re.compile(r"^(#{1,6})\s+\S")
+# H1/H2 视为章节边界；H3 及以下留在所属章节里，避免父子标题被切成碎片
+_SECTION_LEVEL = 2
 
 
 def _split_sections(text: str) -> list[str]:
-    """按 markdown 标题切大段，标题与正文留在一起（语义更完整）。"""
+    """按 markdown 标题切章节，标题与正文留在一起（语义更完整）。
+
+    只在 H1/H2 处开新段，H3+ 子标题继续留在父章节内；否则
+    "## 2. 游戏清单" 后面紧跟 "### 2.1 五子棋" 时，父标题会变成
+    只有一个标题、没有正文的碎片，检索命中后模型拿不到内容。
+    只有一个标题、没有正文的段会并入下一段（通常是文档标题）。
+    """
     sections: list[str] = []
     current: list[str] = []
     for line in text.split("\n"):
-        if _HEADING.match(line) and any(x.strip() for x in current):
+        match = _HEADING.match(line)
+        heading_level = len(match.group(1)) if match else 0
+        if match and heading_level <= _SECTION_LEVEL and any(x.strip() for x in current):
             sections.append("\n".join(current).strip())
             current = [line]
         else:
             current.append(line)
     if any(x.strip() for x in current):
         sections.append("\n".join(current).strip())
-    return [s for s in sections if s]
+
+    merged: list[str] = []
+    pending = ""
+    for section in [s for s in sections if s]:
+        if pending:
+            section = f"{pending}\n\n{section}"
+            pending = ""
+        lines = [line for line in section.splitlines() if line.strip()]
+        if len(lines) == 1 and _HEADING.match(lines[0]):
+            pending = section
+        else:
+            merged.append(section)
+    if pending:
+        if merged:
+            merged[-1] = f"{merged[-1]}\n\n{pending}"
+        else:
+            merged.append(pending)
+    return merged
 
 
 def _pack(block: str, size: int, overlap: int) -> list[str]:
@@ -63,8 +90,9 @@ def _pack(block: str, size: int, overlap: int) -> list[str]:
     buffer = ""
     for paragraph in paragraphs:
         if len(paragraph) > size:
+            # 超长段落不要单独冲掉前面的短标题，否则会出现"只有标题"的碎片
             if buffer:
-                chunks.append(buffer)
+                paragraph = f"{buffer}\n\n{paragraph}"
                 buffer = ""
             start = 0
             while start < len(paragraph):

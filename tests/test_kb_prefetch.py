@@ -119,6 +119,34 @@ async def test_question_prefetches_kb_and_injects_context(monkeypatch, kb_tool):
     assert tools[0]["rows"] == 1
 
 
+async def test_prefetch_uses_full_chunk_text_not_truncated_tool_output(monkeypatch, kb_tool):
+    """表格/清单块不能按工具输出的 300 字截断，否则后半段游戏丢失。"""
+    full_text = "## 2. 游戏清单\n\n| 游戏 ID | 说明 |\n|---|---|\n" + "\n".join(
+        f"| `game-{i}` | 第 {i} 个游戏 |" for i in range(12)
+    )
+
+    async def kb(query: str, top_k: int = 8):
+        return ToolResult(
+            text="知识库检索结果：\n[1] 《06-游戏中心-对局与玩法》第4块\n" + full_text[:300],
+            rows=1,
+            data={"chunks": [{"title": "06-游戏中心-对局与玩法", "seq": 3, "text": full_text}]},
+        )
+
+    kb_tool(kb)
+    seen: list[list[dict]] = []
+
+    async def fake_round(messages, tools, **kwargs):
+        seen.append(messages)
+        yield ("delta", "ok")
+
+    monkeypatch.setattr(loop, "stream_round", fake_round)
+    await _run(user_text="有哪些游戏")
+
+    system = seen[0][0]["content"]
+    assert "`game-11`" in system
+    assert "第4块" in system
+
+
 async def test_no_hits_does_not_inject_context(monkeypatch, kb_tool):
     async def kb(query: str, top_k: int = 8):
         return ToolResult(text="知识库里没有找到相关内容", rows=0)

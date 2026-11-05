@@ -103,3 +103,34 @@ def test_chunk_text_long_paragraph_with_overlap():
 
 def test_chunk_text_empty():
     assert chunk_text("   \n\n  ") == []
+
+
+def test_chunk_text_keeps_parent_heading_with_child_sections():
+    text = (
+        "## 2. 游戏清单\n\n### 2.1 五子棋\n\n五子棋对局与观战。\n\n"
+        "### 2.2 盲棋\n\n盲棋隐藏棋子。\n\n### 2.3 竞技场\n\n竞技场实时对战。"
+    )
+    chunks = chunk_text(text, size=400, overlap=50)
+    assert len(chunks) == 1
+    assert "## 2. 游戏清单" in chunks[0]
+    assert "### 2.1 五子棋" in chunks[0]
+    assert "盲棋隐藏棋子" in chunks[0]
+
+
+def test_chunk_text_splits_on_sibling_headings():
+    text = "# 一\n\n内容一\n\n# 二\n\n内容二\n\n## 二点一\n\n子内容"
+    chunks = chunk_text(text, size=400, overlap=50)
+    assert len(chunks) == 3
+    assert chunks[0] == "# 一\n\n内容一"
+    assert chunks[1] == "# 二\n\n内容二"
+    assert chunks[2].startswith("## 二点一")
+
+
+def test_chunk_text_merges_heading_only_document_title():
+    text = "# 06 游戏\n\n## 1. 概览\n\n总览内容。\n\n## 2. 清单\n\n### 2.1 五子棋\n\n对局。"
+    chunks = chunk_text(text, size=400, overlap=50)
+    assert len(chunks) == 2
+    assert chunks[0].startswith("# 06 游戏")
+    assert "## 1. 概览" in chunks[0]
+    assert "## 2. 清单" in chunks[1]
+    assert "### 2.1 五子棋" in chunks[1]

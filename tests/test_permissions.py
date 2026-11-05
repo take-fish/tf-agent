@@ -77,3 +77,14 @@ def test_console_endpoint_requires_console_permission(monkeypatch):
     denied = client.get("/api/v1/agent/admin/stats", headers={"X-FM-Permissions": PERM_AGENT_USE})
     assert denied.status_code == 403
     assert denied.json()["message"] == "需要 Agent 管理台权限"
+
+
+def test_chat_endpoint_requires_agent_use_permission(monkeypatch):
+    monkeypatch.setattr(settings, "dev_mode", True)
+    denied = client.post(
+        "/api/v1/agent/chat",
+        json={"message": "你好"},
+        headers={"X-FM-Permissions": PERM_KB_MANAGE},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["message"] == "没有使用智能助手的权限"

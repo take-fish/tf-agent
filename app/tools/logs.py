@@ -105,11 +105,7 @@ async def search_logs(
     for stream in (payload.get("data") or {}).get("result") or []:
         labels = stream.get("stream") or {}
         stream_prefix = (
-            labels.get("service")
-            or labels.get("compose_service")
-            or labels.get("container")
-            or labels.get("job")
-            or ""
+            labels.get("service") or labels.get("compose_service") or labels.get("container") or labels.get("job") or ""
         )
         for value in stream.get("values") or []:
             if len(value) < 2:

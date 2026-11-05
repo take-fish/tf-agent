@@ -72,18 +72,12 @@ def test_search_logs_uses_stack_selector_and_json_service(monkeypatch):
     from app.tools import logs
 
     monkeypatch.setattr(logs.settings, "loki_service_label", "")
+    assert logs._build_query("", "tf-game", "") == '{stack="fishmatrix"} | json | service="tf-game"'
     assert (
-        logs._build_query("", "tf-game", "")
-        == '{stack="fishmatrix"} | json | service="tf-game"'
-    )
-    assert (
-        logs._build_query("7d3f9a1c2b8e4f60", "tf-game", "timeout")
-        == '{stack="fishmatrix"} | json | service="tf-game"'
+        logs._build_query("7d3f9a1c2b8e4f60", "tf-game", "timeout") == '{stack="fishmatrix"} | json | service="tf-game"'
         ' | trace_id="7d3f9a1c2b8e4f60" |= "timeout"'
     )
-    assert (
-        logs._build_query("", "", "ERROR") == '{stack="fishmatrix"} |= "ERROR"'
-    )
+    assert logs._build_query("", "", "ERROR") == '{stack="fishmatrix"} |= "ERROR"'
 
 
 def test_search_logs_supports_explicit_stream_label(monkeypatch):

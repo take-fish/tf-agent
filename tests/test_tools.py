@@ -68,6 +68,43 @@ async def test_search_logs_requires_condition(monkeypatch):
     assert "至少需要" in result.text
 
 
+def test_search_logs_uses_stack_selector_and_json_service(monkeypatch):
+    from app.tools import logs
+
+    monkeypatch.setattr(logs.settings, "loki_service_label", "")
+    assert (
+        logs._build_query("", "tf-game", "")
+        == '{stack="fishmatrix"} | json | service="tf-game"'
+    )
+    assert (
+        logs._build_query("7d3f9a1c2b8e4f60", "tf-game", "timeout")
+        == '{stack="fishmatrix"} | json | service="tf-game"'
+        ' | trace_id="7d3f9a1c2b8e4f60" |= "timeout"'
+    )
+    assert (
+        logs._build_query("", "", "ERROR") == '{stack="fishmatrix"} |= "ERROR"'
+    )
+
+
+def test_search_logs_supports_explicit_stream_label(monkeypatch):
+    from app.tools import logs
+
+    monkeypatch.setattr(logs.settings, "loki_service_label", "compose_service")
+    assert logs._build_query("", "game", "") == '{compose_service="game"}'
+
+
+async def test_restart_without_workflow_reports_configuration(monkeypatch):
+    from app.tools import deploy
+
+    monkeypatch.setattr(deploy.settings, "github_token", "test-token")
+    monkeypatch.setattr(deploy.settings, "restart_workflow", "")
+
+    result = await deploy.restart_service("tf-game")
+
+    assert result.ok is False
+    assert "未配置重启 workflow" in result.text
+
+
 def test_registry_filters_by_scene(monkeypatch):
     monkeypatch.setattr(registry, "_config_cache", {})
     monkeypatch.setattr(registry, "_config_loaded_at", 1e18)  # 禁用 DB 读取

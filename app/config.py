@@ -122,7 +122,9 @@ class Settings:
     # 数据源（集中机）
     loki_url: str = field(default_factory=lambda: _env("LOKI_URL", "http://10.28.13.112:3100"))
     loki_timeout: float = field(default_factory=lambda: _float("LOKI_TIMEOUT_SECONDS", 10.0))
-    loki_service_label: str = field(default_factory=lambda: _env("LOKI_SERVICE_LABEL", "service"))
+    # 留空表示 service 是 JSON 字段（Java/Go 日志均带 service），用 `| json | service="..."` 过滤；
+    # 只有显式配置成真实流标签（如 compose_service / container）时才拼进 `{}` 选择器。
+    loki_service_label: str = field(default_factory=lambda: _env("LOKI_SERVICE_LABEL"))
     nacos_url: str = field(default_factory=lambda: _env("NACOS_URL", "http://10.28.13.112:8848"))
     nacos_namespace: str = field(default_factory=lambda: _env("NACOS_NAMESPACE", "fm-prod"))
     # 配置中心：拉 tf-agent.yaml 覆盖场景/限流/知识库参数
@@ -146,19 +148,19 @@ class Settings:
     github_token: str = field(default_factory=lambda: _env("GITHUB_TOKEN"))
     github_api: str = field(default_factory=lambda: _env("GITHUB_API", "https://api.github.com"))
     github_org: str = field(default_factory=lambda: _env("GITHUB_ORG", "take-fish"))
-    # repo -> 发布 workflow 文件名
+    # repo -> 发布 workflow 文件名；各业务仓统一为 .github/workflows/release.yml
     deploy_workflows: dict = field(
         default_factory=lambda: (
             _json_dict("FM_AGENT_DEPLOY_WORKFLOWS")
             or {
-                "tf-web": "deploy.yml",
-                "tf-console": "deploy.yml",
+                "tf-web": "release.yml",
+                "tf-console": "release.yml",
                 "tf-gateway": "release.yml",
-                "tf-user": "python-release.yml",
-                "tf-chat": "python-release.yml",
-                "tf-reader": "python-release.yml",
-                "tf-game": "python-release.yml",
-                "tf-music": "python-release.yml",
+                "tf-user": "release.yml",
+                "tf-chat": "release.yml",
+                "tf-reader": "release.yml",
+                "tf-game": "release.yml",
+                "tf-music": "release.yml",
             }
         )
     )
@@ -166,8 +168,10 @@ class Settings:
     # 只读数据库视图白名单：view -> 说明
     db_views: dict = field(default_factory=lambda: _json_dict("FM_AGENT_DB_VIEWS"))
     db_dsn: str = field(default_factory=lambda: _env("FM_AGENT_DB_DSN"))
-    # 重启服务用的 workflow（默认 restart.yml）
-    restart_workflow: str = field(default_factory=lambda: _env("FM_AGENT_RESTART_WORKFLOW", "restart.yml"))
+    # 重启服务用的 workflow。业务仓目前没有 restart.yml，留空表示未配置；
+    # 需要重启能力时在目标仓新增工作流，再设 FM_AGENT_RESTART_WORKFLOW
+    # 或用 FM_AGENT_DEPLOY_WORKFLOWS 配 "<repo>:restart" 覆盖。
+    restart_workflow: str = field(default_factory=lambda: _env("FM_AGENT_RESTART_WORKFLOW"))
 
     # 向量库 / 嵌入
     # 向量库：Elasticsearch（BM25 + kNN 混合检索；Qdrant 已下线）

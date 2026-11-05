@@ -68,6 +68,12 @@ async def restart_service(service: str, env: str = "prod") -> ToolResult:
     if service not in settings.deploy_workflows:
         return ToolResult.error(f"服务 {service} 不在已知仓库列表中（FM_AGENT_DEPLOY_WORKFLOWS）")
     workflow = settings.deploy_workflows.get(f"{service}:restart") or settings.restart_workflow
+    if not workflow:
+        return ToolResult.error(
+            f"{service} 未配置重启 workflow：仓库目前没有 restart.yml。"
+            "请先在目标仓新增重启工作流，再配置 FM_AGENT_RESTART_WORKFLOW "
+            '或 FM_AGENT_DEPLOY_WORKFLOWS 的 "<repo>:restart"。'
+        )
     env = (env or settings.default_env).strip()
     try:
         ok, message = await _dispatch(service, str(workflow), "master", {"service": service, "environment": env})

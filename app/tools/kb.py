@@ -51,8 +51,9 @@ async def search_kb(query: str, kb_ids: list[str] | None = None, top_k: int = 8)
 
 spec = ToolSpec(
     name="search_kb",
-    description="在团队知识库里做语义检索，返回最相关的文档片段（带出处）。"
-    "涉及运维手册、流程规范、历史故障处理经验时先查这里。",
+    description="在 FishMatrix 团队知识库检索系统架构、服务、业务功能、玩法、赛事、流程、"
+    "规范、配置与历史问题，返回带出处的文档片段。凡是询问系统自身知识，第一步先调用本工具，"
+    "用用户原始问题检索，再决定是否需要日志、健康或数据库工具。",
     parameters=obj_schema(
         {
             "query": {"type": "string", "description": "检索问题或关键词，用自然语言即可"},

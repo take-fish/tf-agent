@@ -185,7 +185,7 @@ class Settings:
     embed_model: str = field(default_factory=lambda: _env("FM_EMBED_MODEL", "BAAI/bge-base-zh-v1.5"))
     embed_model_path: str = field(default_factory=lambda: _env("FM_EMBED_MODEL_PATH"))
     embed_dim: int = field(default_factory=lambda: _int("FM_EMBED_DIM", 768))
-    chunk_size: int = field(default_factory=lambda: _int("FM_KB_CHUNK_SIZE", 500))
+    chunk_size: int = field(default_factory=lambda: _int("FM_KB_CHUNK_SIZE", 800))
     chunk_overlap: int = field(default_factory=lambda: _int("FM_KB_CHUNK_OVERLAP", 80))
     kb_top_k: int = field(default_factory=lambda: _int("FM_KB_TOP_K", 8))
     kb_max_chunks_in_context: int = field(default_factory=lambda: _int("FM_KB_MAX_CHUNKS", 5))

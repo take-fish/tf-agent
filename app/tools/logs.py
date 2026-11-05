@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -14,17 +15,47 @@ from app.tools.base import ToolResult, ToolSpec, obj_schema
 logger = logging.getLogger(__name__)
 
 MAX_LINE_CHARS = 200
+STREAM_SELECTOR = 'stack="fishmatrix"'
+# 这些是 `| json` 解析出来的字段，不能拼进 `{}` 流选择器（Loki 会报语法错误）。
+JSON_FIELDS = {"service", "env", "trace_id", "request_id", "level", "message"}
+
+
+def _quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _build_query(trace_id: str, service: str, keyword: str) -> str:
-    label = settings.loki_service_label if hasattr(settings, "loki_service_label") else "service"
-    selector = f'{label}="{service}"' if service else 'job=~".+"'
-    query = f"{{{selector}}}"
+    """默认按流标签 stack=fishmatrix 选流，service 走 JSON 字段过滤。
+
+    Alloy 只把 stack/container/compose_service/stream 写成流标签，
+    日志里的 service 是 JSON 字段；直接写 `{service="tf-game"}` 会查不到。
+    若 LOKI_SERVICE_LABEL 显式配成真实流标签，则按标签过滤。
+    """
+    label = (settings.loki_service_label or "").strip()
+    use_label = bool(service and label and label not in JSON_FIELDS)
+    query = f'{{{label}="{_quote(service)}"}}' if use_label else f"{{{STREAM_SELECTOR}}}"
+    need_json = False
+    if service and not use_label:
+        query += " | json"
+        need_json = True
+        query += f' | service="{_quote(service)}"'
     if trace_id:
-        query += f' |= "{trace_id}"'
+        if not need_json:
+            query += " | json"
+            need_json = True
+        query += f' | trace_id="{_quote(trace_id)}"'
     if keyword:
-        query += f' |= "{keyword}"'
+        query += f' |= "{_quote(keyword)}"'
     return query
+
+
+def _line_service(line: str) -> str:
+    """从单行 JSON 日志里取 service；流标签中没有这个字段。"""
+    try:
+        payload = json.loads(line)
+    except (TypeError, ValueError):
+        return ""
+    return str(payload.get("service") or "") if isinstance(payload, dict) else ""
 
 
 def _fmt_ts(ns: str) -> str:
@@ -73,11 +104,19 @@ async def search_logs(
     entries: list[tuple[str, str]] = []
     for stream in (payload.get("data") or {}).get("result") or []:
         labels = stream.get("stream") or {}
-        prefix = labels.get("service") or labels.get("app") or labels.get("job") or ""
+        stream_prefix = (
+            labels.get("service")
+            or labels.get("compose_service")
+            or labels.get("container")
+            or labels.get("job")
+            or ""
+        )
         for value in stream.get("values") or []:
             if len(value) < 2:
                 continue
-            entries.append((value[0], f"[{prefix}] {value[1]}" if prefix else value[1]))
+            line = value[1]
+            prefix = _line_service(line) or stream_prefix
+            entries.append((value[0], f"[{prefix}] {line}" if prefix else line))
 
     entries.sort(key=lambda item: int(item[0]), reverse=True)
     entries = entries[:limit]

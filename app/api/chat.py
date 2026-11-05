@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from app import nacos
 from app.agent import loop
-from app.auth import Identity, get_identity
+from app.auth import Identity, require_agent_use
 from app.config import settings
 from app.metrics import CHAT_REQUESTS
 from app.session_store import load as load_session
@@ -97,7 +97,7 @@ _gate = _ConcurrencyGate()
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(get_identity)):
+async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(require_agent_use)):
     _check_rate(identity.user_id)
     await _gate.acquire()
     CHAT_REQUESTS.inc()

@@ -192,6 +192,16 @@ class Settings:
     kb_chunk_chars: int = field(default_factory=lambda: _int("FM_KB_CHUNK_CHARS", 300))
     upload_dir: str = field(default_factory=lambda: _env("FM_AGENT_UPLOAD_DIR", "data/uploads"))
 
+    # 图片 OCR（聊天截图文字识别）：只跑 CPU，不占 GPU
+    ocr_enabled: bool = field(default_factory=lambda: _bool("FM_OCR_ENABLED", True))
+    ocr_max_bytes: int = field(default_factory=lambda: _int("FM_OCR_MAX_BYTES", 5 * 1024 * 1024))
+    ocr_max_pixels: int = field(default_factory=lambda: _int("FM_OCR_MAX_PIXELS", 25_000_000))
+    ocr_max_side: int = field(default_factory=lambda: _int("FM_OCR_MAX_SIDE", 2600))
+    ocr_min_confidence: float = field(default_factory=lambda: _float("FM_OCR_MIN_CONFIDENCE", 0.5))
+    ocr_max_chars: int = field(default_factory=lambda: _int("FM_OCR_MAX_CHARS", 2500))
+    ocr_timeout_seconds: float = field(default_factory=lambda: _float("FM_OCR_TIMEOUT_SECONDS", 20.0))
+    ocr_max_concurrency: int = field(default_factory=lambda: _int("FM_OCR_MAX_CONCURRENCY", 1))
+
     # 网关身份
     identity_secret: str = field(default_factory=lambda: _env("FM_IDENTITY_SECRET"))
     identity_ttl: int = field(default_factory=lambda: _int("FM_IDENTITY_TTL_SECONDS", 120))

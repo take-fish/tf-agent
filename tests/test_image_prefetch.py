@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app import ocr
@@ -51,7 +53,7 @@ async def _run(**overrides):
         "history": [],
         "session_id": "s1",
         "trace_id": "t1",
-        "image": _payload(),
+        "images": [_payload()],
     }
     params.update(overrides)
     return [event async for event in loop.stream_agent(**params)]
@@ -60,7 +62,7 @@ async def _run(**overrides):
 async def test_ocr_text_is_injected_and_audited_without_content(monkeypatch):
     recorded: list[dict] = []
 
-    async def fake_recognize(payload):
+    async def fake_recognize(payload, *, timeout=None):
         return ocr.OcrResult(
             ok=True,
             mime=payload.mime,
@@ -94,9 +96,11 @@ async def test_ocr_text_is_injected_and_audited_without_content(monkeypatch):
     tools = [event for event in events if event["type"] == "tool"]
     assert tools[0]["call_id"] == "prefetch_read_image"
     assert tools[0]["name"] == "read_image"
-    assert tools[0]["status"] == "done"
-    assert tools[0]["rows"] == 1
-    assert tools[0]["data"] == {
+    assert tools[0]["status"] == "running"
+    assert tools[1]["call_id"] == "prefetch_read_image"
+    assert tools[1]["status"] == "done"
+    assert tools[1]["rows"] == 1
+    assert tools[1]["data"] == {
         "mime": "image/png",
         "bytes": 123,
         "chars": len("NullPointerException at ChatService.java:42"),
@@ -109,7 +113,7 @@ async def test_ocr_text_is_injected_and_audited_without_content(monkeypatch):
 
 
 async def test_ocr_failure_degrades_without_injecting_content(monkeypatch):
-    async def fake_recognize(payload):
+    async def fake_recognize(payload, *, timeout=None):
         return ocr.OcrResult(
             ok=False,
             mime=payload.mime,
@@ -133,7 +137,7 @@ async def test_ocr_failure_degrades_without_injecting_content(monkeypatch):
     assert "图片识别失败" in system
     assert "【图片文字识别结果】" in system
 
-    tool = [event for event in events if event["type"] == "tool"][0]
+    tool = [event for event in events if event["type"] == "tool"][-1]
     assert tool["status"] == "error"
     assert tool["message"] == "图片识别超时"
 
@@ -142,7 +146,7 @@ async def test_ocr_failure_degrades_without_injecting_content(monkeypatch):
 
 
 async def test_ocr_empty_text_still_notes_no_text(monkeypatch):
-    async def fake_recognize(payload):
+    async def fake_recognize(payload, *, timeout=None):
         return ocr.OcrResult(ok=True, mime=payload.mime, bytes=10, sha256="x", text="", line_count=0, ms=1)
 
     monkeypatch.setattr(loop.ocr, "recognize", fake_recognize)
@@ -165,7 +169,7 @@ async def test_no_image_does_not_emit_ocr_tool(monkeypatch):
         yield ("delta", "ok")
 
     monkeypatch.setattr(loop, "stream_round", fake_round)
-    events = await _run(image=None)
+    events = await _run(images=None)
 
     assert not [event for event in events if event.get("name") == "read_image"]
     assert "（用户上传图片的 OCR 文本" not in seen[0][0]["content"]
@@ -173,7 +177,7 @@ async def test_no_image_does_not_emit_ocr_tool(monkeypatch):
 
 
 async def test_image_and_kb_notes_coexist(monkeypatch):
-    async def fake_recognize(payload):
+    async def fake_recognize(payload, *, timeout=None):
         return ocr.OcrResult(
             ok=True,
             mime=payload.mime,
@@ -219,3 +223,81 @@ async def test_image_and_kb_notes_coexist(monkeypatch):
     assert "截图里的文字" in system
     assert "【知识库自动检索结果】" in system
     assert "知识库片段" in system
+
+
+async def test_multiple_images_are_ocred_separately(monkeypatch):
+    recorded: list[dict] = []
+
+    async def fake_recognize(payload, *, timeout=None):
+        text = "第一张文字" if payload.data == "aGVsbG8=" else "第二张文字"
+        return ocr.OcrResult(
+            ok=True,
+            mime=payload.mime,
+            bytes=1,
+            sha256="hash",
+            text=text,
+            line_count=1,
+            ms=1,
+        )
+
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(loop.ocr, "recognize", fake_recognize)
+    monkeypatch.setattr(loop.audit, "record", fake_record)
+    seen: list[list[dict]] = []
+
+    async def fake_round(messages, tools, **kwargs):
+        seen.append(messages)
+        yield ("delta", "ok")
+
+    monkeypatch.setattr(loop, "stream_round", fake_round)
+    events = await _run(images=[_payload(), ocr.ImagePayload(mime="image/jpeg", data="d29ybGQ=")])
+
+    system = seen[0][0]["content"]
+    assert "共 2 张" in system
+    assert "[图 1]" in system and "第一张文字" in system
+    assert "[图 2]" in system and "第二张文字" in system
+
+    tools = [event for event in events if event["type"] == "tool"]
+    assert [tool["status"] for tool in tools] == ["running", "done", "running", "done"]
+    assert [tool["call_id"] for tool in tools] == [
+        "prefetch_read_image_1",
+        "prefetch_read_image_1",
+        "prefetch_read_image_2",
+        "prefetch_read_image_2",
+    ]
+    assert [record["arguments"]["index"] for record in recorded] == [1, 2]
+    assert "第一张文字" not in str(recorded)
+
+
+async def test_images_skipped_when_total_budget_exhausted(monkeypatch):
+    monkeypatch.setattr(loop.settings, "ocr_total_timeout_seconds", 1.0)
+
+    async def slow_recognize(payload, *, timeout=None):
+        await asyncio.sleep(1.1)
+        return ocr.OcrResult(
+            ok=True,
+            mime=payload.mime,
+            bytes=1,
+            sha256="hash",
+            text="第一张文字",
+            line_count=1,
+            ms=1100,
+        )
+
+    monkeypatch.setattr(loop.ocr, "recognize", slow_recognize)
+    seen: list[list[dict]] = []
+
+    async def fake_round(messages, tools, **kwargs):
+        seen.append(messages)
+        yield ("delta", "ok")
+
+    monkeypatch.setattr(loop, "stream_round", fake_round)
+    events = await _run(images=[_payload(), _payload()])
+
+    skipped = [event for event in events if event.get("status") == "error"]
+    assert skipped and skipped[-1]["message"] == "识别总时长超限"
+    system = seen[0][0]["content"]
+    assert "[图 2]" in system
+    assert "已跳过" in system

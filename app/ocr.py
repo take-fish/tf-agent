@@ -211,8 +211,11 @@ def _failure(mime: str, size: int, sha: str, started: float, error: str) -> OcrR
     )
 
 
-async def recognize(payload: ImagePayload) -> OcrResult:
-    """异步识别一张图片；异常收敛成 OcrResult，不向请求层抛。"""
+async def recognize(payload: ImagePayload, *, timeout: float | None = None) -> OcrResult:
+    """异步识别一张图片；异常收敛成 OcrResult，不向请求层抛。
+
+    timeout 用于多图时按整批预算逐张收紧，缺省仍用 FM_OCR_TIMEOUT_SECONDS。
+    """
     started = time.perf_counter()
     mime = (payload.mime or "").strip().lower()
     if not settings.ocr_enabled:
@@ -229,7 +232,7 @@ async def recognize(payload: ImagePayload) -> OcrResult:
     try:
         text, line_count = await asyncio.wait_for(
             asyncio.to_thread(_run_engine, prepared),
-            timeout=max(0.1, settings.ocr_timeout_seconds),
+            timeout=max(0.1, timeout if timeout is not None else settings.ocr_timeout_seconds),
         )
     except TimeoutError:
         logger.warning("图片识别超时 sha=%s", prepared.sha256[:12])

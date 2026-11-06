@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app import nacos, ocr
 from app.agent import loop
@@ -33,8 +33,13 @@ router = APIRouter()
 _rate_bucket: dict[int, list[float]] = defaultdict(list)
 
 
+MAX_CHAT_IMAGES = 6
+# 与 tf-web 的 Nginx 10MB 请求体上限留出余量；前端会把每张图压到约 800KB。
+MAX_TOTAL_IMAGE_BASE64 = 8_000_000
+
+
 class ChatImage(BaseModel):
-    """可选单图：聊天端把用户最近一张图连同 @ 提问一起发来。"""
+    """单张图片：助手页可直接发多张，聊天端仍只发最近一张。"""
 
     mime: str = Field(pattern=r"^image/(png|jpeg|webp|gif)$")
     # 5MB 原图的标准 Base64 约 6.7MB；给一点余量，超过由 OCR 层再按字节校验。
@@ -46,7 +51,19 @@ class ChatRequest(BaseModel):
     session_id: str = ""
     scene: str = ""  # 空 = auto：由用户在对话里描述，模型自己选工具
     env: str = Field(default="prod", pattern="^(prod|test)$")
+    # image 是 tf-chat 的旧单图字段；images 是助手页的多图字段，两者合并后一起识别。
     image: ChatImage | None = None
+    images: list[ChatImage] = Field(default_factory=list, max_length=MAX_CHAT_IMAGES)
+
+    @model_validator(mode="after")
+    def _merge_images(self) -> ChatRequest:
+        merged = ([self.image] if self.image is not None else []) + list(self.images)
+        if len(merged) > MAX_CHAT_IMAGES:
+            raise ValueError(f"最多支持 {MAX_CHAT_IMAGES} 张图片")
+        if sum(len(item.data) for item in merged) > MAX_TOTAL_IMAGE_BASE64:
+            raise ValueError("图片总量过大，请减少数量或压缩后重试")
+        self.images = merged
+        return self
 
 
 def sse(payload: dict[str, Any]) -> str:
@@ -113,7 +130,7 @@ async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(
 
     session_id = req.session_id or new_session_id()
     trace_id = (request.headers.get("x-request-id") or uuid.uuid4().hex)[:16]
-    image = ocr.ImagePayload(mime=req.image.mime, data=req.image.data) if req.image is not None else None
+    images = [ocr.ImagePayload(mime=item.mime, data=item.data) for item in req.images]
 
     async def generate() -> AsyncIterator[str]:
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -133,7 +150,7 @@ async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(
                         history=history,
                         session_id=session_id,
                         trace_id=trace_id,
-                        image=image,
+                        images=images,
                     ):
                         await queue.put(("event", event))
                     await queue.put(("end", None))

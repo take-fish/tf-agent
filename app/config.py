@@ -200,6 +200,7 @@ class Settings:
     ocr_min_confidence: float = field(default_factory=lambda: _float("FM_OCR_MIN_CONFIDENCE", 0.5))
     ocr_max_chars: int = field(default_factory=lambda: _int("FM_OCR_MAX_CHARS", 2500))
     ocr_timeout_seconds: float = field(default_factory=lambda: _float("FM_OCR_TIMEOUT_SECONDS", 20.0))
+    ocr_total_timeout_seconds: float = field(default_factory=lambda: _float("FM_OCR_TOTAL_TIMEOUT_SECONDS", 45.0))
     ocr_max_concurrency: int = field(default_factory=lambda: _int("FM_OCR_MAX_CONCURRENCY", 1))
 
     # 网关身份

@@ -106,6 +106,17 @@ async def test_recognize_degrades_on_timeout(monkeypatch):
     assert result.error == "图片识别超时"
 
 
+async def test_recognize_accepts_explicit_timeout(monkeypatch):
+    def slow(prepared):
+        time.sleep(0.2)
+        return "迟到的文字", 1
+
+    monkeypatch.setattr(ocr, "_run_engine", slow)
+    result = await ocr.recognize(_payload(), timeout=0.01)
+    assert result.ok is False
+    assert result.error == "图片识别超时"
+
+
 async def test_recognize_respects_disabled(monkeypatch):
     monkeypatch.setattr(ocr.settings, "ocr_enabled", False)
     result = await ocr.recognize(_payload())

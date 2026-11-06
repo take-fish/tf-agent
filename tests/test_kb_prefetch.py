@@ -109,6 +109,7 @@ async def test_question_prefetches_kb_and_injects_context(monkeypatch, kb_tool):
     system = seen[0][0]["content"]
     assert "【知识库自动检索结果】" in system
     assert "五子棋" in system
+    assert "矛盾的旧结论" in system
     assert calls == [("有哪些游戏", 4)]
     assert recorded[0]["arguments"]["prefetch"] is True
     assert recorded[0]["tool"] == "search_kb"

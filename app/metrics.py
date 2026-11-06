@@ -26,3 +26,11 @@ TOOL_SECONDS = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60),
 )
 TOOL_CALLS = Counter("fm_agent_tool_calls_total", "工具调用数", ["tool", "ok"])
+
+# 图片 OCR：预处理（校验/解码/缩放）+ 识别整体耗时
+OCR_SECONDS = Histogram(
+    "fm_agent_ocr_seconds",
+    "图片文字识别耗时",
+    buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30),
+)
+OCR_TOTAL = Counter("fm_agent_ocr_total", "图片文字识别次数", ["tool", "ok"])

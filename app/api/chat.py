@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app import nacos
+from app import nacos, ocr
 from app.agent import loop
 from app.auth import Identity, require_agent_use
 from app.config import settings
@@ -33,11 +33,20 @@ router = APIRouter()
 _rate_bucket: dict[int, list[float]] = defaultdict(list)
 
 
+class ChatImage(BaseModel):
+    """可选单图：聊天端把用户最近一张图连同 @ 提问一起发来。"""
+
+    mime: str = Field(pattern=r"^image/(png|jpeg|webp|gif)$")
+    # 5MB 原图的标准 Base64 约 6.7MB；给一点余量，超过由 OCR 层再按字节校验。
+    data: str = Field(min_length=16, max_length=8_000_000)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     session_id: str = ""
     scene: str = ""  # 空 = auto：由用户在对话里描述，模型自己选工具
     env: str = Field(default="prod", pattern="^(prod|test)$")
+    image: ChatImage | None = None
 
 
 def sse(payload: dict[str, Any]) -> str:
@@ -104,6 +113,7 @@ async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(
 
     session_id = req.session_id or new_session_id()
     trace_id = (request.headers.get("x-request-id") or uuid.uuid4().hex)[:16]
+    image = ocr.ImagePayload(mime=req.image.mime, data=req.image.data) if req.image is not None else None
 
     async def generate() -> AsyncIterator[str]:
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -123,6 +133,7 @@ async def chat(req: ChatRequest, request: Request, identity: Identity = Depends(
                         history=history,
                         session_id=session_id,
                         trace_id=trace_id,
+                        image=image,
                     ):
                         await queue.put(("event", event))
                     await queue.put(("end", None))

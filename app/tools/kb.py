@@ -9,6 +9,7 @@ import anyio.to_thread
 from app import nacos
 from app.config import settings
 from app.kb import embedder, store
+from app.kb import eval as kb_eval
 from app.tools.base import ToolResult, ToolSpec, obj_schema
 
 logger = logging.getLogger(__name__)
@@ -42,11 +43,18 @@ async def search_kb(query: str, kb_ids: list[str] | None = None, top_k: int = 8)
         text = hit["text"].strip()[:chunk_chars]
         lines.append(f"[{idx}] 《{hit['title']}》第{int(hit['seq']) + 1}块（相关度 {hit['score']:.2f}）\n{text}")
 
-    return ToolResult(
-        text="知识库检索结果：\n" + "\n\n".join(lines),
-        rows=len(selected),
-        data={"chunks": selected, "query": query},
-    )
+    data: dict = {"chunks": selected, "query": query}
+    terms = kb_eval.query_terms(query)
+    if terms and hits:
+        threshold = kb_eval.relevance_threshold(len(terms))
+        try:
+            total_relevant = await anyio.to_thread.run_sync(lambda: store.count_relevant(terms, kb_ids, threshold))
+        except Exception as exc:  # noqa: BLE001 - 指标失败不影响检索
+            logger.warning("统计知识库相关片段失败：%s", exc)
+        else:
+            data["metrics"] = kb_eval.evaluate(query, hits, total_relevant)
+
+    return ToolResult(text="知识库检索结果：\n" + "\n\n".join(lines), rows=len(selected), data=data)
 
 
 spec = ToolSpec(

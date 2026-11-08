@@ -15,12 +15,14 @@ from app.kb import es_backend
 
 __all__ = [
     "backend",
+    "count_relevant",
     "delete_doc",
     "delete_kb",
     "ensure",
     "health",
     "info",
     "search",
+    "search_pool",
     "upsert_chunks",
 ]
 
@@ -58,6 +60,23 @@ def search(
     query_text: str | None = None,
 ) -> list[dict[str, Any]]:
     return es_backend.search(vector, kb_ids, top_k, query_text)
+
+
+def search_pool(
+    vector: list[float],
+    kb_ids: list[str] | None,
+    size: int,
+    query_text: str | None = None,
+) -> list[dict[str, Any]]:
+    return es_backend.search_pool(vector, kb_ids, size, query_text)
+
+
+def count_relevant(
+    terms: list[str],
+    kb_ids: list[str] | None,
+    min_should: int,
+) -> int:
+    return es_backend.count_relevant(terms, kb_ids, min_should)
 
 
 def health() -> bool:

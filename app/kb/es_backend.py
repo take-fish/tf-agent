@@ -239,6 +239,114 @@ def search(
     ]
 
 
+def _source_key(hit: dict[str, Any]) -> tuple[str, int]:
+    source = hit.get("_source") or {}
+    return str(source.get("doc_id", "")), int(source.get("seq", 0) or 0)
+
+
+def search_pool(
+    vector: list[float],
+    kb_ids: list[str] | None,
+    size: int,
+    query_text: str | None = None,
+) -> list[dict[str, Any]]:
+    """评测候选池：kNN + BM25 各取 size 条，去重并集并保留两路名次。
+
+    与 ``search()`` 的区别是不截断到 top_k：评测需要看到“可能相关但没进前 k”
+    的片段，才能人工标注出召回率的分母。返回顺序即 RRF 融合顺序。
+    """
+    ensure()
+    size = min(100, max(1, int(size)))
+    flt = {"terms": {"kb_id": list(kb_ids)}} if kb_ids else None
+
+    knn: dict[str, Any] = {
+        "field": "vector",
+        "query_vector": vector,
+        "k": size,
+        "num_candidates": max(size * 10, 200),
+    }
+    if flt:
+        knn["filter"] = flt
+    knn_hits = _search_body(
+        {
+            "knn": knn,
+            "size": size,
+            "_source": _SOURCE_FIELDS,
+            "track_total_hits": False,
+        }
+    )
+
+    text_hits: list[dict[str, Any]] = []
+    if query_text and settings.kb_hybrid:
+        query: dict[str, Any] = {"bool": {"must": [{"match": {"text": {"query": query_text}}}]}}
+        if flt:
+            query["bool"]["filter"] = [flt]
+        text_hits = _search_body({"query": query, "size": size, "_source": _SOURCE_FIELDS, "track_total_hits": False})
+
+    if text_hits:
+        fused = rrf_fuse([knn_hits, text_hits])
+    else:
+        fused = [{**hit, "score": round(float(hit.get("_score", 0.0)), 4)} for hit in knn_hits]
+
+    knn_ranks = {_source_key(hit): rank for rank, hit in enumerate(knn_hits, start=1)}
+    bm25_ranks = {_source_key(hit): rank for rank, hit in enumerate(text_hits, start=1)}
+    result: list[dict[str, Any]] = []
+    for rank, hit in enumerate(fused, start=1):
+        source = hit.get("_source") or {}
+        key = _source_key(hit)
+        result.append(
+            {
+                "doc_id": source.get("doc_id", ""),
+                "kb_id": source.get("kb_id", ""),
+                "title": source.get("title", ""),
+                "seq": int(source.get("seq", 0) or 0),
+                "text": source.get("text", ""),
+                "score": float(hit.get("score", 0.0)),
+                "knn_rank": knn_ranks.get(key),
+                "bm25_rank": bm25_ranks.get(key),
+                "rrf_rank": rank,
+            }
+        )
+    return result
+
+
+def relevance_query(
+    terms: list[str],
+    kb_ids: list[str] | None,
+    min_should: int,
+) -> dict[str, Any]:
+    """统计“相关片段”的查询：命中至少 min_should 个问题关键词。
+
+    每个关键词单独 match，避免 cjk 分词把整句拆成一堆无关 bigram；
+    拉丁多词（如 tf-game）要求全部 token 命中，和检索侧保持一致。
+    """
+    bool_query: dict[str, Any] = {
+        "should": [{"match": {"text": {"query": term, "operator": "and"}}} for term in terms],
+        "minimum_should_match": max(1, min(min_should, len(terms))),
+    }
+    if kb_ids:
+        bool_query["filter"] = [{"terms": {"kb_id": list(kb_ids)}}]
+    return {"bool": bool_query}
+
+
+def count_relevant(
+    terms: list[str],
+    kb_ids: list[str] | None,
+    min_should: int,
+) -> int:
+    """全库相关片段数——召回率的分母，不是本批召回结果。"""
+    if not terms:
+        return 0
+    resp = get_client().post(
+        f"/{_index()}/_count",
+        json={"query": relevance_query(terms, kb_ids, min_should)},
+    )
+    if resp.status_code == 404:  # 索引还没建
+        return 0
+    _check(resp, "统计相关片段")
+    return int(resp.json().get("count", 0))
+
+
 def health() -> bool:
     try:
         resp = get_client().get("/_cluster/health")

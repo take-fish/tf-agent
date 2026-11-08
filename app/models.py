@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, SmallInteger, String, func
+from sqlalchemy import BigInteger, DateTime, Float, Integer, SmallInteger, String, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
@@ -160,3 +160,71 @@ class AgentProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(3), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class AgentEvalSet(Base):
+    """检索评测题集：限定知识库范围与 top-k 口径。"""
+
+    __tablename__ = "agent_eval_set"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    kb_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
+
+
+class AgentEvalQuestion(Base):
+    __tablename__ = "agent_eval_question"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    set_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    query: Mapped[str] = mapped_column(String(500), nullable=False)
+    note: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    pooled_at: Mapped[datetime | None] = mapped_column(DateTime(3))
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
+
+
+class AgentEvalCandidate(Base):
+    """候选池快照：doc_id + seq 唯一，保存当时的正文，避免重建索引后标注失真。"""
+
+    __tablename__ = "agent_eval_candidate"
+    __table_args__ = (UniqueConstraint("question_id", "doc_id", "seq", name="uq_eval_candidate_chunk"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    question_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    doc_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    knn_rank: Mapped[int | None] = mapped_column(Integer)
+    bm25_rank: Mapped[int | None] = mapped_column(Integer)
+    rrf_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 0 不相关 / 1 部分相关 / 2 高度相关；NULL 表示还没标
+    label: Mapped[int | None] = mapped_column(SmallInteger)
+    label_source: Mapped[str] = mapped_column(String(8), nullable=False, default="")
+    labeled_by: Mapped[int | None] = mapped_column(BigInteger)
+    labeled_at: Mapped[datetime | None] = mapped_column(DateTime(3))
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())
+
+
+class AgentEvalRun(Base):
+    """一次评测快照：汇总指标 + 逐题明细，用于历史对比。"""
+
+    __tablename__ = "agent_eval_run"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    set_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    complete_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    precision: Mapped[float | None] = mapped_column(Float)
+    recall: Mapped[float | None] = mapped_column(Float)
+    mrr: Mapped[float | None] = mapped_column(Float)
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())

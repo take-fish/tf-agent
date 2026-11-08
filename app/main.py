@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from app import errors, llm, nacos
 from app.api import admin, chat, confirm, kb, meta, profile, sessions
+from app.api import eval as eval_api
 from app.config import settings
 from app.db import init_db
 from app.kb import embedder
@@ -69,6 +70,7 @@ app = FastAPI(
 app.include_router(chat.router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(confirm.router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(kb.router, prefix="/api/v1/agent/kb", tags=["knowledge-base"])
+app.include_router(eval_api.router, prefix="/api/v1/agent/eval", tags=["eval"])
 app.include_router(admin.router, prefix="/api/v1/agent/admin", tags=["admin"])
 app.include_router(profile.router, prefix="/api/v1/agent", tags=["profile"])
 app.include_router(sessions.router, prefix="/api/v1/agent", tags=["sessions"])

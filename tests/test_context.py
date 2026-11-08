@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.agent import context
 from app.kb.ingest import chunk_text
 
@@ -79,6 +81,27 @@ def test_fit_messages_never_leaves_orphan_tool_messages():
     tool_ids = {m["tool_call_id"] for m in messages if m.get("role") == "tool"}
     call_ids = {c["id"] for m in messages if m.get("tool_calls") for c in m["tool_calls"]}
     assert tool_ids <= call_ids
+
+
+def test_tool_call_message_normalizes_invalid_arguments():
+    bad = '{"trace_id": "service": "tf-game", "keyword": "ERROR", "limit": 20}'
+    message = context.tool_call_message(
+        [
+            {"id": "c1", "name": "search_logs", "arguments": bad},
+            {"id": "c2", "name": "search_logs", "arguments": '{"service":"tf-game","limit":20}'},
+            {"id": "c3", "name": "search_logs", "arguments": ""},
+            {"id": "c4", "name": "search_logs", "arguments": "[1,2]"},
+        ]
+    )
+
+    args = [call["function"]["arguments"] for call in message["tool_calls"]]
+    assert args == ["{}", '{"service":"tf-game","limit":20}', "{}", "{}"]
+    # 回灌给模型的历史必须是可解析的 JSON，否则 vLLM 会 400
+    assert all(isinstance(json.loads(arg), dict) for arg in args)
+
+
+def test_normalize_arguments_keeps_chinese_readable():
+    assert context.normalize_arguments('{"query": "五子棋 赛事"}') == '{"query":"五子棋 赛事"}'
 
 
 def test_trim_history_caps_single_message():

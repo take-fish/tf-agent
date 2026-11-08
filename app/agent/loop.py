@@ -69,6 +69,81 @@ async def _execute(spec, arguments: dict[str, Any], env: str) -> tuple[Any, int]
     return result, int((time.perf_counter() - start) * 1000)
 
 
+# 实时/状态类问题：这些工具成功才算拿到了本次数据，知识库文档不能顶替。
+_REALTIME_TOOLS = {"search_logs", "check_health", "query_view", "query_pipeline"}
+_REALTIME_HINTS = (
+    "日志",
+    "报错",
+    "错误",
+    "异常",
+    "trace",
+    "监控",
+    "告警",
+    "最近",
+    "刚才",
+    "现在",
+    "实时",
+    "挂了",
+    "超时",
+    "健康",
+    "失败",
+)
+_REALTIME_SYSTEM_NOTE = (
+    "\n\n【证据要求】这是实时或状态类问题：必须先调用日志、健康、数据库或流水线工具获取本次数据；"
+    "没有工具结果时只能说明没有查到，禁止给出日志行、时间戳或状态结论。"
+)
+
+
+def _looks_realtime(text: str) -> bool:
+    compact = (text or "").lower()
+    return any(hint in compact for hint in _REALTIME_HINTS)
+
+
+def _correction_note(failures: list[tuple[str, str]]) -> str:
+    """工具失败后补一条纠错提示，避免模型把“没执行”当成“查到了”。"""
+    details = "\n".join(f"- {name}：{reason}" for name, reason in failures)
+    return (
+        "【系统提示】上一轮有工具没有成功，本次不能把这些工具的数据当作已经取得：\n"
+        f"{details}\n"
+        "如果回答问题必须依赖其中某个工具，请在下一轮重新调用，并确保参数是合法的 JSON 对象；"
+        "如果原因是服务不可用或参数无法修正，不要反复重试，直接告诉用户这次没有查到。"
+        "禁止编造日志行、时间戳、trace_id 或查询结论。"
+    )
+
+
+def _evidence_guard(
+    failures: list[tuple[str, str]],
+    successes: set[str],
+    user_text: str,
+) -> str:
+    """最后一轮前核对证据，7B 模型容易把文档或记忆里的内容当成刚查到的结果。"""
+    realtime_ok = bool(successes & _REALTIME_TOOLS)
+    realtime_question = _looks_realtime(user_text)
+    if not failures and not (realtime_question and not realtime_ok):
+        return ""
+
+    success_line = "、".join(sorted(successes)) or "无"
+    if failures:
+        failure_line = "\n".join(f"- {name}：{reason}" for name, reason in failures)
+    else:
+        failure_line = "- 无（但本次没有调用任何实时工具）"
+    text = (
+        "【最终回答依据核查】本次实际可用的工具结果：\n"
+        f"- 已成功：{success_line}\n"
+        f"- 未成功/无数据：\n{failure_line}\n"
+        "规则：\n"
+        "1. 只能依据“已成功”的工具结果陈述事实；不得给出未成功工具的数据，"
+        "也不得编造日志行、时间戳、trace_id 或查询结论。\n"
+        "2. 【知识库自动检索结果】是历史文档片段，不是日志或实时状态；"
+        "不得改写成日志，不得把其中的历史时间说成“最近”。\n"
+    )
+    if realtime_question and not realtime_ok:
+        text += (
+            "3. 用户问的是最近/当前情况，但本次没有任何实时工具成功，只能回答“这次没有查到”，并建议重试或缩小范围。\n"
+        )
+    return text
+
+
 _KB_GREETINGS = ("你好", "您好", "嗨", "hi", "hello", "在吗", "谢谢", "多谢", "再见")
 _KB_PREFETCH_TOP_K = 4
 _KB_NOTE_MAX_CHARS = 2800
@@ -122,7 +197,7 @@ async def _prefetch_kb(
         return "", None
 
     TOOL_SECONDS.labels(tool=spec.name).observe(ms / 1000)
-    TOOL_CALLS.labels(tool=spec.name, ok="0" if result.ok else "1").inc()
+    TOOL_CALLS.labels(tool=spec.name, ok="1" if result.ok else "0").inc()
     await audit.record(
         trace_id=trace_id,
         user_id=identity.user_id,
@@ -155,7 +230,10 @@ async def _prefetch_kb(
         "不要只复述文档标题、也不要让用户自己去查文档。"
         "对话历史里如果出现与以上片段矛盾的旧结论（例如“视图为空”“查不到”“去查日志”），"
         "一律以本次片段为准，忽略旧结论重新回答，不要重复旧回答。"
-        "若片段与问题无关可以忽略；同一问题不需要重复调用 search_kb。"
+        "若片段与问题无关可以忽略；同一问题不需要重复调用 search_kb。\n"
+        "边界：以上片段来自团队历史文档，可能包含示例、旧结论或旧时间戳，它们不是实时日志，"
+        "也不代表当前线上状态。用户问“最近/刚才/现在/线上”的情况时，必须以本次日志或健康工具的结果为准；"
+        "不得把片段内容改写成带时间戳的日志行，也不得把片段里的历史时间当作“最近”。"
     )
     return note, event
 
@@ -346,12 +424,12 @@ async def _run_one(call: dict[str, Any], env: str, sem: asyncio.Semaphore) -> _O
     """执行单个工具；异常不外抛，统一收敛成 outcome.error。"""
     outcome = _Outcome(call)
     if outcome.spec is None:
-        outcome.error = f"工具 {call.get('name')} 不存在"
+        outcome.error = f"本次调用未执行：工具 {call.get('name')} 不存在，不要臆测它的结果。"
         return outcome
     try:
         outcome.arguments = _parse_args(call.get("arguments") or "")
     except ValueError as exc:
-        outcome.error = str(exc)
+        outcome.error = f"本次调用未执行：{exc}"
         return outcome
 
     async with sem:
@@ -359,11 +437,11 @@ async def _run_one(call: dict[str, Any], env: str, sem: asyncio.Semaphore) -> _O
             result, ms = await _execute(outcome.spec, outcome.arguments, env)
         except TimeoutError:
             outcome.ms = 0
-            outcome.error = f"工具 {outcome.name} 超时"
+            outcome.error = f"本次调用未返回结果：工具 {outcome.name} 超时，不要臆测它的结果。"
             return outcome
         except Exception as exc:  # noqa: BLE001 - 工具异常要回喂模型，不中断对话
             logger.exception("工具 %s 执行失败", outcome.name)
-            outcome.error = f"工具 {outcome.name} 执行失败：{exc}"
+            outcome.error = f"本次调用未返回结果：工具 {outcome.name} 执行失败（{exc}），不要臆测它的结果。"
             return outcome
     outcome.result = result
     outcome.ms = ms
@@ -421,6 +499,8 @@ async def stream_agent(
     tool_schemas = [spec.schema() for spec in tools] or None
     max_tokens = nacos.limit("max-tokens", scene.max_tokens)
     system = prompt.build_system_prompt(scene, env=env, user_name=identity.display_name)
+    if _looks_realtime(user_text):
+        system += _REALTIME_SYSTEM_NOTE
 
     yield {"type": "start", "trace_id": trace_id, "scene": scene.name, "env": env, "tools": [t.name for t in tools]}
 
@@ -467,6 +547,9 @@ async def stream_agent(
 
     final_text = ""
     usage: dict[str, Any] = {}
+    all_failures: list[tuple[str, str]] = []
+    succeeded_tools: set[str] = set()
+    correction_sent = False
     deadline = time.monotonic() + settings.request_timeout
     max_rounds = max(1, nacos.limit("max-tool-rounds", settings.max_tool_rounds))
     total_rounds = max_rounds + 1  # 最后一轮不传 tools，强制总结
@@ -487,6 +570,11 @@ async def stream_agent(
             return
 
         allow_tools = round_index < max_rounds
+        if round_index == max_rounds:
+            # 收尾轮前核对证据：没有成功的实时工具时，不允许把文档内容当查询结果。
+            guard = _evidence_guard(all_failures, succeeded_tools, user_text)
+            if guard:
+                messages.append({"role": "user", "content": guard})
         calls: list[dict[str, Any]] | None = None
         round_usage: dict[str, Any] = {}
         round_started = time.perf_counter()
@@ -589,10 +677,12 @@ async def stream_agent(
                 }
             outcomes = await asyncio.gather(*[_run_one(call, env, tool_sem) for call in to_run])
             results: list[tuple[str, str]] = []
+            round_failures: list[tuple[str, str]] = []
             for outcome in outcomes:
                 TOOL_SECONDS.labels(tool=outcome.name).observe(outcome.ms / 1000)
                 TOOL_CALLS.labels(tool=outcome.name, ok="0" if outcome.error else "1").inc()
                 if outcome.error:
+                    round_failures.append((outcome.name, outcome.error))
                     results.append((outcome.call_id, outcome.error))
                     await audit.record(
                         trace_id=trace_id,
@@ -613,7 +703,17 @@ async def stream_agent(
                         "message": outcome.error,
                     }
                     continue
-                results.append((outcome.call_id, outcome.result.text))
+                if not outcome.result.ok:
+                    round_failures.append((outcome.name, outcome.result.text))
+                    results.append(
+                        (
+                            outcome.call_id,
+                            f"{outcome.result.text}\n（本次没有取得数据，禁止在回答中声称已查到该工具的结果。）",
+                        )
+                    )
+                else:
+                    succeeded_tools.add(outcome.name)
+                    results.append((outcome.call_id, outcome.result.text))
                 await audit.record(
                     trace_id=trace_id,
                     user_id=identity.user_id,
@@ -636,6 +736,11 @@ async def stream_agent(
                     "data": outcome.result.data,
                 }
             messages.extend(context.tool_result_messages(results))
+            all_failures.extend(round_failures)
+            if round_failures and not correction_sent and round_index + 1 < max_rounds:
+                # 给模型一次自我纠正的机会；只发一次，避免反复失败时刷轮次。
+                messages.append({"role": "user", "content": _correction_note(round_failures)})
+                correction_sent = True
             # 工具结果可能把窗口顶爆：再压一次，确保下一轮还塞得下
             context.fit_messages(messages, settings.llm_context_tokens, max_tokens + schema_tokens + 128)
             logger.info("第 %s 轮工具执行完成，共 %s 个", round_index + 1, len(outcomes))

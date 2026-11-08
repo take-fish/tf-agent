@@ -226,3 +226,79 @@ async def test_stream_round_does_not_retry_on_4xx(monkeypatch):
             pass
 
     assert attempts["n"] == 1
+
+
+async def test_invalid_tool_args_are_marked_unexecuted_and_get_correction(monkeypatch):
+    """参数非法时工具没执行，模型必须被告知并得到一次纠错提示。"""
+    seen_messages: list[list[dict]] = []
+
+    async def probe():
+        return ToolResult(text="不应执行")
+
+    registry.register(_spec("probe", probe))
+
+    async def fake_round(messages, tools, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        if tools:
+            yield ("tool_calls", [{"id": "c1", "name": "probe", "arguments": '{"a": "b": 1}'}])
+        else:
+            yield ("delta", "这次没有查到")
+
+    try:
+        monkeypatch.setattr(loop, "stream_round", fake_round)
+        monkeypatch.setattr(loop.settings, "max_tool_rounds", 2)
+        events = await _run(user_text="tf-game 最近半小时有报错吗？")
+    finally:
+        registry._REGISTRY.pop("probe", None)
+
+    error_events = [event for event in events if event["type"] == "tool" and event["status"] == "error"]
+    assert error_events and "本次调用未执行" in error_events[0]["message"]
+
+    # 第二轮请求里必须带上纠错提示，要求重新调用或如实说没查到
+    corrections = [message for message in seen_messages[1] if "【系统提示】" in str(message.get("content"))]
+    assert corrections and "重新调用" in corrections[0]["content"]
+
+    # 收尾轮前必须有证据核查，明确禁止编造
+    guards = [message for message in seen_messages[-1] if "【最终回答依据核查】" in str(message.get("content"))]
+    assert guards and "不得编造日志行" in guards[0]["content"]
+
+    assert [event for event in events if event["type"] == "done"][-1]["text"] == "这次没有查到"
+
+
+async def test_failed_tool_result_feeds_back_no_data(monkeypatch):
+    """工具返回 ok=False（例如 Loki 不可达）时，回喂文本要明确“没有取得数据”。"""
+    seen_messages: list[list[dict]] = []
+
+    async def probe():
+        return ToolResult.error("Loki 不可达")
+
+    registry.register(_spec("probe", probe))
+
+    async def fake_round(messages, tools, **kwargs):
+        seen_messages.append([dict(message) for message in messages])
+        if tools:
+            yield ("tool_calls", [{"id": "c1", "name": "probe", "arguments": "{}"}])
+        else:
+            yield ("delta", "这次没有查到")
+
+    try:
+        monkeypatch.setattr(loop, "stream_round", fake_round)
+        monkeypatch.setattr(loop.settings, "max_tool_rounds", 1)
+        await _run(user_text="查一下 tf-game 最近的报错")
+    finally:
+        registry._REGISTRY.pop("probe", None)
+
+    tool_messages = [message for message in seen_messages[-1] if message.get("role") == "tool"]
+    assert tool_messages and "本次没有取得数据" in tool_messages[0]["content"]
+    guards = [message for message in seen_messages[-1] if "【最终回答依据核查】" in str(message.get("content"))]
+    assert guards and "Loki 不可达" in guards[0]["content"]
+
+
+def test_evidence_guard_skips_plain_kb_question():
+    assert loop._evidence_guard([], set(), "发布流程是什么？") == ""
+
+
+def test_evidence_guard_flags_realtime_question_without_tools():
+    text = loop._evidence_guard([], set(), "tf-game 最近半小时有报错吗？")
+    assert "这次没有查到" in text
+    assert "没有调用任何实时工具" in text

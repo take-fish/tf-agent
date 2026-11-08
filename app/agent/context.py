@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -164,6 +165,26 @@ def build_round_messages(
     return fit_messages(messages, max_context_tokens, reserve_tokens)
 
 
+def normalize_arguments(raw: Any) -> str:
+    """把模型给出的工具参数规整成合法 JSON 对象字符串。
+
+    7B 模型偶尔会吐半截或串位的 JSON（如 `{"trace_id": "service": "tf-game"}`）。
+    本地解析失败会作为工具错误回喂模型，但如果原样写回历史，vLLM 在渲染/校验
+    历史 tool_calls 时会再次解析失败并直接返回 400，整轮对话就断了。
+    因此回灌历史时一律规范化：能解析就压缩成对象，解析不了退化成空对象。
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return "{}"
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("工具参数不是合法 JSON，回灌历史时置空：%s", raw[:120])
+        return "{}"
+    if not isinstance(value, dict):
+        return "{}"
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def tool_call_message(calls: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "role": "assistant",
@@ -172,7 +193,7 @@ def tool_call_message(calls: list[dict[str, Any]]) -> dict[str, Any]:
             {
                 "id": call["id"] or f"call_{idx}",
                 "type": "function",
-                "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                "function": {"name": call["name"], "arguments": normalize_arguments(call.get("arguments"))},
             }
             for idx, call in enumerate(calls)
         ],

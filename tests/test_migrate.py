@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app import db
@@ -25,6 +27,20 @@ def test_split_statements_ignores_comments_and_quotes(tmp_path):
 
 def test_split_statements_without_trailing_semicolon():
     assert split_statements("SELECT 1") == ["SELECT 1"]
+
+
+def test_v11_migration_adds_context_eval_and_distill_columns():
+    migrations = Path(__file__).resolve().parent.parent / "migrations"
+    names = [name for name, _ in discover(migrations)]
+    assert "V11__kb_context_eval_distill.sql" in names
+
+    statements = split_statements((migrations / "V11__kb_context_eval_distill.sql").read_text(encoding="utf-8"))
+    sql = "\n".join(statements)
+    for column in ("section", "section_seq", "content_hash", "section_coverage"):
+        assert f"`{column}`" in sql, f"V11 缺少字段 {column}"
+    assert "agent_eval_question" in sql and "`type`" in sql
+    assert "idx_kb_chunk_doc_section" in sql
+    assert "idx_kb_doc_content_hash" in sql
 
 
 def test_discover_orders_by_version(tmp_path):

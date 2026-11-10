@@ -24,7 +24,12 @@ logger = logging.getLogger(__name__)
 _client: httpx.Client | None = None
 # RRF 的平滑常数，业界常用 60；两路排序做倒数和，避免单一打分尺度不可比
 RRF_K = 60
-_SOURCE_FIELDS = ["kb_id", "doc_id", "title", "seq", "text"]
+_SOURCE_FIELDS = ["kb_id", "doc_id", "title", "seq", "section", "section_seq", "text"]
+# 章节字段单独抽出来，老索引可在线 PUT _mapping 追加，不需要删库重建
+_CONTEXT_PROPERTIES = {
+    "section": {"type": "text", "analyzer": "cjk", "fields": {"raw": {"type": "keyword"}}},
+    "section_seq": {"type": "integer"},
+}
 
 
 def get_client() -> httpx.Client:
@@ -65,6 +70,8 @@ def index_mapping(dim: int | None = None) -> dict[str, Any]:
                 "doc_id": {"type": "keyword"},
                 "title": {"type": "text", "analyzer": "cjk", "fields": {"raw": {"type": "keyword"}}},
                 "seq": {"type": "integer"},
+                "section": {"type": "text", "analyzer": "cjk", "fields": {"raw": {"type": "keyword"}}},
+                "section_seq": {"type": "integer"},
                 "text": {"type": "text", "analyzer": "cjk"},
                 "vector": {
                     "type": "dense_vector",
@@ -97,6 +104,16 @@ def ensure(dim: int | None = None) -> None:
     logger.info("创建 ES 索引 %s (dim=%s)", _index(), dim or settings.embed_dim)
 
 
+def ensure_fields() -> None:
+    """给已存在的索引补章节字段（只追加、幂等；老索引无需删除重建）。"""
+    client = get_client()
+    resp = client.put(f"/{_index()}/_mapping", json={"properties": _CONTEXT_PROPERTIES})
+    if resp.status_code == 404:
+        ensure()
+        resp = client.put(f"/{_index()}/_mapping", json={"properties": _CONTEXT_PROPERTIES})
+    _check(resp, "更新映射")
+
+
 def bulk_body(
     kb_id: str,
     doc_id: str,
@@ -125,6 +142,7 @@ def upsert_chunks(
     if not body:
         return
     ensure()
+    ensure_fields()
     resp = get_client().post(
         "/_bulk",
         params={"refresh": "wait_for"},
@@ -232,6 +250,8 @@ def search(
             "kb_id": hit.get("_source", {}).get("kb_id", ""),
             "title": hit.get("_source", {}).get("title", ""),
             "seq": hit.get("_source", {}).get("seq", 0),
+            "section": hit.get("_source", {}).get("section", ""),
+            "section_seq": hit.get("_source", {}).get("section_seq"),
             "text": hit.get("_source", {}).get("text", ""),
             "score": float(hit.get("score", 0.0)),
         }
@@ -300,6 +320,8 @@ def search_pool(
                 "kb_id": source.get("kb_id", ""),
                 "title": source.get("title", ""),
                 "seq": int(source.get("seq", 0) or 0),
+                "section": source.get("section", ""),
+                "section_seq": source.get("section_seq"),
                 "text": source.get("text", ""),
                 "score": float(hit.get("score", 0.0)),
                 "knn_rank": knn_ranks.get(key),

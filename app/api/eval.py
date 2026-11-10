@@ -43,6 +43,12 @@ class EvalSetCreate(BaseModel):
 
 class QuestionImport(BaseModel):
     queries: list[str] = Field(default_factory=list)
+    type: Literal["fact", "flow"] = "fact"
+
+
+class QuestionUpdate(BaseModel):
+    type: Literal["fact", "flow"] | None = None
+    note: str | None = Field(default=None, max_length=255)
 
 
 class CandidateLabelUpdate(BaseModel):
@@ -75,6 +81,8 @@ def _candidate_dict(row: AgentEvalCandidate) -> dict[str, Any]:
         "question_id": row.question_id,
         "doc_id": row.doc_id,
         "seq": row.seq,
+        "section": row.section,
+        "section_seq": row.section_seq,
         "title": row.title,
         "text": row.text,
         "score": row.score,
@@ -97,6 +105,7 @@ def _run_dict(row: AgentEvalRun, *, include_detail: bool = False) -> dict[str, A
         "precision": row.precision,
         "recall": row.recall,
         "mrr": row.mrr,
+        "section_coverage": row.section_coverage,
         "created_at": _iso(row.created_at),
     }
     if include_detail:
@@ -139,12 +148,21 @@ def _question_summary(
     top_k: int,
 ) -> dict[str, Any]:
     metrics = eval_metrics.question_metrics(
-        [{"rrf_rank": row.rrf_rank, "label": row.label} for row in candidates],
+        [
+            {
+                "rrf_rank": row.rrf_rank,
+                "label": row.label,
+                "doc_id": row.doc_id,
+                "section_seq": row.section_seq,
+            }
+            for row in candidates
+        ],
         top_k,
     )
     return {
         "id": question.id,
         "query": question.query,
+        "type": question.type or "fact",
         "note": question.note,
         "pooled_at": _iso(question.pooled_at),
         **metrics,
@@ -171,6 +189,10 @@ def _replace_candidates(question_id: str, hits: list[dict[str, Any]]) -> None:
                     question_id=question_id,
                     doc_id=str(hit.get("doc_id", "")),
                     seq=int(hit.get("seq", 0) or 0),
+                    section=str(hit.get("section", ""))[:255],
+                    section_seq=(
+                        int(hit["section_seq"]) if hit.get("section_seq") is not None else None
+                    ),
                     title=str(hit.get("title", ""))[:255],
                     text=str(hit.get("text", "")),
                     score=float(hit.get("score", 0.0) or 0.0),
@@ -263,7 +285,12 @@ async def get_set(set_id: str, _: Identity = Depends(require_kb_manage)):
             )
             grouped = _group_candidates(db, [question.id for question in questions])
             items = _question_summaries(questions, grouped, row.top_k)
-            return {**_set_dict(row), "questions": items, "metrics": eval_metrics.aggregate_metrics(items)}
+            return {
+                **_set_dict(row),
+                "questions": items,
+                "metrics": eval_metrics.aggregate_metrics(items),
+                "by_type": eval_metrics.aggregate_by_type(items),
+            }
 
     return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
 
@@ -332,11 +359,39 @@ async def import_questions(
                         id=question_id,
                         set_id=set_id,
                         query=query,
+                        type=payload.type,
                         created_by=identity.user_id,
                     )
                 )
                 added.append(question_id)
             return {"added": len(added), "skipped": len(payload.queries) - len(added), "ids": added}
+
+    return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
+
+
+@router.patch("/questions/{question_id}")
+async def update_question(
+    question_id: str,
+    payload: QuestionUpdate,
+    _: Identity = Depends(require_kb_manage),
+):
+    """修改题型（fact / flow）或备注，用于按题型统计指标。"""
+    _require_db()
+
+    def _work() -> dict[str, Any]:
+        with session_scope() as db:
+            question = _require_question(db, question_id)
+            if payload.type is not None:
+                question.type = payload.type
+            if payload.note is not None:
+                question.note = payload.note
+            return {
+                "id": question.id,
+                "set_id": question.set_id,
+                "query": question.query,
+                "type": question.type or "fact",
+                "note": question.note,
+            }
 
     return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
 
@@ -377,6 +432,7 @@ async def list_candidates(question_id: str, _: Identity = Depends(require_kb_man
                     "id": question.id,
                     "set_id": question.set_id,
                     "query": question.query,
+                    "type": question.type or "fact",
                     "pooled_at": _iso(question.pooled_at),
                 },
                 "candidates": [_candidate_dict(row) for row in rows],
@@ -512,6 +568,7 @@ async def create_run(set_id: str, identity: Identity = Depends(require_kb_manage
             grouped = _group_candidates(db, [question.id for question in questions])
             items = _question_summaries(questions, grouped, eval_set.top_k)
             metrics = eval_metrics.aggregate_metrics(items)
+            by_type = eval_metrics.aggregate_by_type(items)
             if metrics["complete_count"] == 0:
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
@@ -526,9 +583,11 @@ async def create_run(set_id: str, identity: Identity = Depends(require_kb_manage
                 precision=metrics["precision"],
                 recall=metrics["recall"],
                 mrr=metrics["mrr"],
+                section_coverage=metrics["section_coverage"],
                 detail={
                     "set": _set_dict(eval_set),
                     "metrics": metrics,
+                    "by_type": by_type,
                     "questions": items,
                 },
                 created_by=identity.user_id,

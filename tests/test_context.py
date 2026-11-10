@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from app.agent import context
-from app.kb.ingest import chunk_text
+from app.kb.ingest import chunk_text, chunk_text_details
 
 
 def test_trim_history_keeps_last_n():
@@ -157,3 +157,22 @@ def test_chunk_text_merges_heading_only_document_title():
     assert "## 1. 概览" in chunks[0]
     assert "## 2. 清单" in chunks[1]
     assert "### 2.1 五子棋" in chunks[1]
+
+
+def test_chunk_text_details_keeps_section_path_and_seq():
+    text = "# 06 游戏\n\n## 1. 概览\n\n总览内容。\n\n## 2. 清单\n\n### 2.1 五子棋\n\n对局。"
+    details = chunk_text_details(text, size=400, overlap=50)
+    assert [item["section_seq"] for item in details] == [0, 1]
+    assert details[0]["section"] == "06 游戏 / 1. 概览"
+    assert details[1]["section"] == "06 游戏 / 2. 清单"
+    assert details[1]["text"].startswith("## 2. 清单")
+    assert [item["seq"] for item in details] == [0, 1]
+
+
+def test_chunk_text_details_h3_stays_in_parent_section():
+    text = "## 2. 游戏清单\n\n### 2.1 五子棋\n\n五子棋对局。\n\n### 2.2 盲棋\n\n盲棋隐藏棋子。"
+    details = chunk_text_details(text, size=400, overlap=50)
+    assert len(details) == 1
+    assert details[0]["section"] == "2. 游戏清单"
+    assert details[0]["section_seq"] == 0
+    assert "### 2.2 盲棋" in details[0]["text"]

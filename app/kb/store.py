@@ -19,6 +19,7 @@ __all__ = [
     "delete_doc",
     "delete_kb",
     "ensure",
+    "ensure_fields",
     "health",
     "info",
     "search",
@@ -33,6 +34,11 @@ def backend() -> str:
 
 def ensure(dim: int | None = None) -> None:
     es_backend.ensure(dim)
+
+
+def ensure_fields() -> None:
+    """给已有索引补章节字段（V11 升级后重建索引前调用）。"""
+    es_backend.ensure_fields()
 
 
 def upsert_chunks(

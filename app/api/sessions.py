@@ -8,8 +8,9 @@ from typing import Any
 import anyio.to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.auth import Identity, require_agent_use
+from app.auth import PERM_KB_MANAGE, Identity, require_agent_use
 from app.db import db_available, session_scope
+from app.kb import distill
 from app.models import AgentSession
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,36 @@ async def get_session(session_id: str, identity: Identity = Depends(require_agen
             }
 
     return {"code": 0, "data": await anyio.to_thread.run_sync(_work)}
+
+
+@router.post("/sessions/{session_id}/distill")
+async def distill_session(
+    session_id: str,
+    kb_id: str = Query("", max_length=40),
+    identity: Identity = Depends(require_agent_use),
+):
+    """把会话整理成知识库草稿：只写 pending 文档，不自动审核、不进索引。"""
+    _require_db()
+    if not distill.enabled():
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "会话沉淀功能未开启")
+
+    def _owner() -> int:
+        with session_scope() as db:
+            row = db.get(AgentSession, session_id)
+            if row is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+            if row.user_id != identity.user_id and not identity.has_permission(PERM_KB_MANAGE):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+            return row.user_id
+
+    owner_id = await anyio.to_thread.run_sync(_owner)
+    try:
+        result = await distill.create_draft(session_id, user_id=owner_id, kb_id=(kb_id or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {"code": 0, "data": result}
 
 
 @router.delete("/sessions/{session_id}")

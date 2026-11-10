@@ -43,43 +43,62 @@ _HEADING = re.compile(r"^(#{1,6})\s+\S")
 _SECTION_LEVEL = 2
 
 
-def _split_sections(text: str) -> list[str]:
-    """按 markdown 标题切章节，标题与正文留在一起（语义更完整）。
+def _heading_title(line: str) -> str:
+    match = _HEADING.match(line)
+    return line[len(match.group(1)) :].strip() if match else ""
+
+
+def _split_section_details(text: str) -> list[dict[str, str]]:
+    """按 markdown 标题切章节，返回 [(章节路径, 正文)]。
 
     只在 H1/H2 处开新段，H3+ 子标题继续留在父章节内；否则
     "## 2. 游戏清单" 后面紧跟 "### 2.1 五子棋" 时，父标题会变成
     只有一个标题、没有正文的碎片，检索命中后模型拿不到内容。
+    章节路径取 "H1 / H2"，用于命中后整节回捞与评测覆盖统计。
     只有一个标题、没有正文的段会并入下一段（通常是文档标题）。
     """
-    sections: list[str] = []
+    sections: list[dict[str, str]] = []
     current: list[str] = []
+    stack: list[str] = []
+    path = ""
+
     for line in text.split("\n"):
         match = _HEADING.match(line)
         heading_level = len(match.group(1)) if match else 0
-        if match and heading_level <= _SECTION_LEVEL and any(x.strip() for x in current):
-            sections.append("\n".join(current).strip())
+        if match and heading_level <= _SECTION_LEVEL:
+            if any(x.strip() for x in current):
+                sections.append({"section": path, "text": "\n".join(current).strip()})
+            title = _heading_title(line)
+            if heading_level == 1:
+                stack = [title]
+            else:
+                stack = [stack[0] if stack else "", title]
+            path = " / ".join(part for part in stack if part)[:255]
             current = [line]
         else:
             current.append(line)
     if any(x.strip() for x in current):
-        sections.append("\n".join(current).strip())
+        sections.append({"section": path, "text": "\n".join(current).strip()})
 
-    merged: list[str] = []
+    merged: list[dict[str, str]] = []
     pending = ""
-    for section in [s for s in sections if s]:
+    pending_section = ""
+    for item in [item for item in sections if item["text"]]:
+        section = item["text"]
         if pending:
             section = f"{pending}\n\n{section}"
             pending = ""
         lines = [line for line in section.splitlines() if line.strip()]
         if len(lines) == 1 and _HEADING.match(lines[0]):
             pending = section
+            pending_section = item["section"]
         else:
-            merged.append(section)
+            merged.append({"section": item["section"], "text": section})
     if pending:
         if merged:
-            merged[-1] = f"{merged[-1]}\n\n{pending}"
+            merged[-1]["text"] = f"{merged[-1]['text']}\n\n{pending}"
         else:
-            merged.append(pending)
+            merged.append({"section": pending_section, "text": pending})
     return merged
 
 
@@ -109,20 +128,38 @@ def _pack(block: str, size: int, overlap: int) -> list[str]:
     return [c.strip() for c in chunks if c.strip()]
 
 
-def chunk_text(text: str, size: int | None = None, overlap: int | None = None) -> list[str]:
+def chunk_text_details(
+    text: str,
+    size: int | None = None,
+    overlap: int | None = None,
+) -> list[dict[str, object]]:
+    """切块并保留章节信息：[{seq, section, section_seq, text}]。"""
     size = size or int(nacos.kb_param("chunk-size", settings.chunk_size))
     overlap = overlap or int(nacos.kb_param("chunk-overlap", settings.chunk_overlap))
     text = text.replace("\r\n", "\n").strip()
     if not text:
         return []
 
-    chunks: list[str] = []
-    for section in _split_sections(text):
-        if len(section) <= size:
-            chunks.append(section)
-        else:
-            chunks.extend(_pack(section, size, overlap))
-    return chunks
+    details: list[dict[str, object]] = []
+    seq = 0
+    for section_seq, item in enumerate(_split_section_details(text)):
+        block = item["text"]
+        pieces = [block] if len(block) <= size else _pack(block, size, overlap)
+        for piece in pieces:
+            details.append(
+                {
+                    "seq": seq,
+                    "section": item["section"],
+                    "section_seq": section_seq,
+                    "text": piece,
+                }
+            )
+            seq += 1
+    return details
+
+
+def chunk_text(text: str, size: int | None = None, overlap: int | None = None) -> list[str]:
+    return [str(item["text"]) for item in chunk_text_details(text, size, overlap)]
 
 
 def save_upload(doc_id: str, data: bytes) -> Path:
@@ -181,8 +218,8 @@ def ingest_document_sync(doc_id: str) -> int:
                 row.content = text
 
     _set_status(doc_id, "chunking")
-    pieces = chunk_text(text)
-    if not pieces:
+    details = chunk_text_details(text)
+    if not details:
         _set_status(doc_id, "failed", error="解析后没有可索引的文本")
         return 0
 
@@ -196,11 +233,13 @@ def ingest_document_sync(doc_id: str) -> int:
             "id": uuid.uuid4().hex[:32],
             "doc_id": doc_id,
             "kb_id": kb_id,
-            "seq": idx,
-            "text": piece,
-            "tokens": max(1, len(piece) // 2),
+            "seq": int(item["seq"]),
+            "section": str(item["section"])[:255],
+            "section_seq": int(item["section_seq"]),
+            "text": str(item["text"]),
+            "tokens": max(1, len(str(item["text"])) // 2),
         }
-        for idx, piece in enumerate(pieces)
+        for item in details
     ]
     with session_scope() as db:
         db.bulk_insert_mappings(AgentKbChunk, rows)

@@ -97,9 +97,7 @@ def aggregate_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
     with_relevant = [item for item in complete if int(item.get("relevant_count") or 0) > 0]
     recalls = [float(item["recall"]) for item in with_relevant if item.get("recall") is not None]
     mrrs = [float(item["mrr"]) for item in with_relevant if item.get("mrr") is not None]
-    coverages = [
-        float(item["section_coverage"]) for item in complete if item.get("section_coverage") is not None
-    ]
+    coverages = [float(item["section_coverage"]) for item in complete if item.get("section_coverage") is not None]
     return {
         "question_count": len(items),
         "complete_count": len(complete),

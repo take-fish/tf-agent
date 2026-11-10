@@ -190,9 +190,7 @@ def _replace_candidates(question_id: str, hits: list[dict[str, Any]]) -> None:
                     doc_id=str(hit.get("doc_id", "")),
                     seq=int(hit.get("seq", 0) or 0),
                     section=str(hit.get("section", ""))[:255],
-                    section_seq=(
-                        int(hit["section_seq"]) if hit.get("section_seq") is not None else None
-                    ),
+                    section_seq=(int(hit["section_seq"]) if hit.get("section_seq") is not None else None),
                     title=str(hit.get("title", ""))[:255],
                     text=str(hit.get("text", "")),
                     score=float(hit.get("score", 0.0) or 0.0),

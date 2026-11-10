@@ -165,8 +165,10 @@ def _format_kb_hits(result: Any) -> str:
         has_expanded = any(bool(block.get("expanded")) for block in blocks)
         lines: list[str] = []
         for idx, block in enumerate(blocks, start=1):
-            limit = _KB_EXPANDED_MAX_CHARS if block.get("expanded") else (
-                _KB_RAW_WITH_EXPAND_CHARS if has_expanded else _KB_CHUNK_MAX_CHARS
+            limit = (
+                _KB_EXPANDED_MAX_CHARS
+                if block.get("expanded")
+                else (_KB_RAW_WITH_EXPAND_CHARS if has_expanded else _KB_CHUNK_MAX_CHARS)
             )
             text = str(block.get("text") or "").strip()[:limit]
             start = int(block.get("seq_start") or 0) + 1

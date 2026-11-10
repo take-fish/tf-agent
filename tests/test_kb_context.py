@@ -53,10 +53,13 @@ def test_neighbor_mode_merges_adjacent_rows_and_removes_overlap(monkeypatch):
         4: "数据库备份完成后再执行迁移。\n迁移成功后更新镜像。",
         5: "迁移成功后更新镜像。\n最后重启服务。",
     }
-    monkeypatch.setattr(context, "_load_neighbors", lambda hit, radius: [
-        {"seq": seq, "text": text, "section": "发布流程", "section_seq": 2}
-        for seq, text in sorted(rows.items())
-    ])
+    monkeypatch.setattr(
+        context,
+        "_load_neighbors",
+        lambda hit, radius: [
+            {"seq": seq, "text": text, "section": "发布流程", "section_seq": 2} for seq, text in sorted(rows.items())
+        ],
+    )
 
     blocks = context.expand_hits([_hit(4, "数据库备份完成后再执行迁移。")], mode="neighbor")
 
@@ -124,10 +127,14 @@ def test_section_mode_uses_section_loader(monkeypatch):
 
 def test_section_mode_without_metadata_falls_back_to_neighbors(monkeypatch):
     monkeypatch.setattr(context, "_load_section", lambda hit, max_chunks: pytest.fail("没有章节字段不应整节回捞"))
-    monkeypatch.setattr(context, "_load_neighbors", lambda hit, radius: [
-        {"seq": 0, "text": "上一块", "section": "", "section_seq": None},
-        {"seq": 1, "text": "当前块", "section": "", "section_seq": None},
-    ])
+    monkeypatch.setattr(
+        context,
+        "_load_neighbors",
+        lambda hit, radius: [
+            {"seq": 0, "text": "上一块", "section": "", "section_seq": None},
+            {"seq": 1, "text": "当前块", "section": "", "section_seq": None},
+        ],
+    )
 
     blocks = context.expand_hits([_hit(1)], mode="section")
     assert blocks[0]["expanded"] is True
@@ -135,10 +142,14 @@ def test_section_mode_without_metadata_falls_back_to_neighbors(monkeypatch):
 
 
 def test_total_budget_caps_expanded_text(monkeypatch):
-    monkeypatch.setattr(context, "_load_neighbors", lambda hit, radius: [
-        {"seq": 0, "text": "甲" * 700, "section": "", "section_seq": 0},
-        {"seq": 1, "text": "乙" * 700, "section": "", "section_seq": 0},
-    ])
+    monkeypatch.setattr(
+        context,
+        "_load_neighbors",
+        lambda hit, radius: [
+            {"seq": 0, "text": "甲" * 700, "section": "", "section_seq": 0},
+            {"seq": 1, "text": "乙" * 700, "section": "", "section_seq": 0},
+        ],
+    )
     blocks = context.expand_hits([_hit(0), _hit(1)], mode="neighbor")
     expanded = [block for block in blocks if block["expanded"]]
     assert expanded

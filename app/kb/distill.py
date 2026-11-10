@@ -27,9 +27,7 @@ _MAX_MESSAGE_CHARS = 1500
 _MAX_TOTAL_CHARS = 6000
 _DISTILL_KB_NAMES = ("会话沉淀", "运维沉淀", "知识沉淀")
 
-_SECRET = re.compile(
-    r"(?i)(token|password|passwd|secret|api[_-]?key|authorization)(\s*[:=]\s*)([^\s,;，；]+)"
-)
+_SECRET = re.compile(r"(?i)(token|password|passwd|secret|api[_-]?key|authorization)(\s*[:=]\s*)([^\s,;，；]+)")
 
 _SYSTEM_PROMPT = """你是 FishMatrix 团队知识库编辑。请把一段智能助手排障会话整理成一篇可复用的 Markdown 文档。
 

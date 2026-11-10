@@ -105,6 +105,8 @@ class AgentKbDoc(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     # 解析后的正文：支持在线编辑（改完重新切块），为空时回落解析原始文件
     content: Mapped[str | None] = mapped_column(LONGTEXT, nullable=True)
+    # 正文指纹：会话沉淀按内容去重，避免同一轮复盘反复入库
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     # 对普通用户是否在列表 / 详情里展示（默认展示）。
     # 注意：隐藏只是"不展示"，文档仍然在向量库里、照常参与 search_kb 检索——
     # 它表达的是展示偏好，不是检索权限，不要拿它当访问控制用。
@@ -145,6 +147,8 @@ class AgentKbChunk(Base):
     doc_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     kb_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    section: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    section_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -182,6 +186,8 @@ class AgentEvalQuestion(Base):
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     set_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     query: Mapped[str] = mapped_column(String(500), nullable=False)
+    # fact 事实直答 / flow 流程与排障；老题默认 fact
+    type: Mapped[str] = mapped_column(String(16), nullable=False, default="fact")
     note: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     pooled_at: Mapped[datetime | None] = mapped_column(DateTime(3))
     created_by: Mapped[int | None] = mapped_column(BigInteger)
@@ -198,6 +204,8 @@ class AgentEvalCandidate(Base):
     question_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     doc_id: Mapped[str] = mapped_column(String(40), nullable=False)
     seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    section: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    section_seq: Mapped[int | None] = mapped_column(Integer)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -225,6 +233,7 @@ class AgentEvalRun(Base):
     precision: Mapped[float | None] = mapped_column(Float)
     recall: Mapped[float | None] = mapped_column(Float)
     mrr: Mapped[float | None] = mapped_column(Float)
+    section_coverage: Mapped[float | None] = mapped_column(Float)
     detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_by: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(3), nullable=False, server_default=func.now())

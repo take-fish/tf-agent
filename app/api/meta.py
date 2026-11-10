@@ -13,7 +13,7 @@ from app.agent import prompt
 from app.auth import Identity, get_identity
 from app.config import settings
 from app.db import db_available
-from app.kb import store
+from app.kb import distill, store
 from app.metrics import CHAT_REQUESTS, TOOL_CALLS
 from app.tools import registry
 
@@ -63,6 +63,7 @@ async def status():
             "vector": {**kb_info, "ok": kb_ok, "hybrid": settings.kb_hybrid},
             "tools": len(registry.all_specs()),
             "embedding": {"model": settings.embed_model, "dim": settings.embed_dim},
+            "distill": {"enabled": distill.enabled()},
             "nacos": {
                 "enabled": settings.nacos_enabled,
                 "config_ok": nacos.status().config_ok,

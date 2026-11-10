@@ -190,6 +190,18 @@ class Settings:
     kb_top_k: int = field(default_factory=lambda: _int("FM_KB_TOP_K", 8))
     kb_max_chunks_in_context: int = field(default_factory=lambda: _int("FM_KB_MAX_CHUNKS", 5))
     kb_chunk_chars: int = field(default_factory=lambda: _int("FM_KB_CHUNK_CHARS", 300))
+    # 检索结果上下文打包：off / neighbor / section（Nacos 可热更新）
+    kb_expand_mode: str = field(default_factory=lambda: _env("FM_KB_EXPAND_MODE", "off"))
+    kb_expand_radius: int = field(default_factory=lambda: _int("FM_KB_EXPAND_RADIUS", 1))
+    kb_expand_top: int = field(default_factory=lambda: _int("FM_KB_EXPAND_TOP", 2))
+    kb_expand_block_chars: int = field(default_factory=lambda: _int("FM_KB_EXPAND_BLOCK_CHARS", 700))
+    kb_expand_total_chars: int = field(default_factory=lambda: _int("FM_KB_EXPAND_TOTAL_CHARS", 1600))
+    kb_section_block_chars: int = field(default_factory=lambda: _int("FM_KB_SECTION_CHARS", 1100))
+    kb_section_total_chars: int = field(default_factory=lambda: _int("FM_KB_SECTION_TOTAL_CHARS", 2400))
+    kb_section_max_chunks: int = field(default_factory=lambda: _int("FM_KB_SECTION_MAX_CHUNKS", 8))
+    # 会话沉淀为知识库草稿：默认关闭，配置好沉淀知识库后再打开
+    kb_distill_enabled: bool = field(default_factory=lambda: _bool("FM_KB_DISTILL_ENABLED", False))
+    kb_distill_kb_id: str = field(default_factory=lambda: _env("FM_KB_DISTILL_KB_ID"))
     upload_dir: str = field(default_factory=lambda: _env("FM_AGENT_UPLOAD_DIR", "data/uploads"))
 
     # 图片 OCR（聊天截图文字识别）：只跑 CPU，不占 GPU

@@ -22,5 +22,7 @@ def chunk_payload(kb_id: str, doc_id: str, title: str, chunk: dict[str, Any]) ->
         "doc_id": doc_id,
         "title": title,
         "seq": chunk["seq"],
+        "section": chunk.get("section", ""),
+        "section_seq": chunk.get("section_seq", 0),
         "text": chunk["text"],
     }

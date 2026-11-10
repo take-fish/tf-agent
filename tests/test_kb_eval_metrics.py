@@ -54,3 +54,42 @@ def test_aggregate_is_macro_average_over_complete_questions_only():
     assert aggregate["recall"] == 1.0
     assert aggregate["mrr"] == 1.0
     assert aggregate["relevant_candidates"] == 3
+
+
+def _sections(rank: int, label: int, doc_id: str, section_seq: int) -> dict:
+    return {"rrf_rank": rank, "label": label, "doc_id": doc_id, "section_seq": section_seq}
+
+
+def test_section_coverage_counts_distinct_relevant_sections():
+    candidates = [
+        _sections(1, 1, "doc", 0),
+        _sections(2, 0, "doc", 9),
+        _sections(3, 1, "doc", 1),
+        _sections(4, 2, "doc", 2),
+    ]
+    # 相关章节：doc#0、doc#1、doc#2，共 3 个；top-2 只覆盖 doc#0
+    assert eval_metrics.section_coverage_at_k(candidates, 2) == 0.3333
+    # top-3 覆盖 doc#0 与 doc#1
+    assert eval_metrics.section_coverage_at_k(candidates, 3) == 0.6667
+
+
+def test_section_coverage_is_none_without_section_metadata():
+    assert eval_metrics.section_coverage_at_k([_candidate(1, 1)], 1) is None
+    metrics = eval_metrics.question_metrics([_candidate(1, 1), _candidate(2, 0)], 2)
+    assert metrics["section_coverage"] is None
+
+
+def test_aggregate_by_type_splits_fact_and_flow():
+    fact = {**eval_metrics.question_metrics([_candidate(1, 1), _candidate(2, 0)], 2), "type": "fact"}
+    flow = {
+        **eval_metrics.question_metrics(
+            [_sections(1, 1, "doc", 0), _sections(2, 1, "doc", 1), _sections(3, 0, "doc", 2)],
+            1,
+        ),
+        "type": "flow",
+    }
+    result = eval_metrics.aggregate_by_type([fact, flow])
+    assert list(result) == ["fact", "flow"]
+    assert result["fact"]["question_count"] == 1
+    assert result["fact"]["section_coverage"] is None
+    assert result["flow"]["section_coverage"] == 0.5

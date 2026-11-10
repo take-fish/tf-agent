@@ -87,6 +87,23 @@ docker build -t tf-agent .
   `agent_llm_call`：每轮模型调用的 token 与耗时（用于算成本、找慢轮次）。
 - SSE 长任务期间每 10 秒发一行 `: ping` 注释保活，客户端可忽略。
 
+## 知识库上下文扩展与会话沉淀
+
+检索命中后可以在打包层加一层连续上下文，`chunks` 仍是原始命中（评测口径不变），`blocks` 才是注入提示的文本：
+
+- `expand-mode=off`：只给命中块（默认）。
+- `neighbor`：命中块向前后各扩 `expand-radius` 块，重叠区去重，单块 `expand-block-chars`、总预算 `expand-total-chars`。
+- `section`：按章节整节回捞，单节 `section-chars`、总预算 `section-total-chars`、最多 `section-max-chunks` 块；老索引缺章节字段时自动退回 `neighbor`。
+
+参数都在 Nacos `agent.knowledge-base.*`（`expand-mode` / `expand-top` / `expand-radius` / `expand-block-chars` / `expand-total-chars` / `section-chars` / `section-total-chars` / `section-max-chunks`），可用环境变量 `FM_KB_*` 兜底。升级后先补 ES 映射并重建索引，章节才能落到 `agent_kb_chunk.section/section_seq`：
+
+```bash
+uv run python -m app.kb.reindex --dry-run   # 只列待重建文档，不写索引
+uv run python -m app.kb.reindex             # 只处理 approved 文档，逐篇失败不阻断
+```
+
+会话沉淀（`agent.knowledge-base.distill-enabled` / `FM_KB_DISTILL_ENABLED`）开启后，助手页出现「沉淀草稿」：只取 user / assistant 消息，脱敏后交给模型整理，按内容指纹去重，写入 `agent_kb_doc` 时固定 `review_status=pending`、`status=waiting`，**不会自动审核或进索引**；审核入口仍是知识库页面。可选 `distill-kb-id` 指定目标库，否则按名称（会话沉淀 / 运维沉淀 / 知识沉淀）挑选。
+
 ## 升级注意
 
 - 新增表结构后必须先跑迁移再重启业务容器：

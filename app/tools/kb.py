@@ -8,7 +8,7 @@ import anyio.to_thread
 
 from app import nacos
 from app.config import settings
-from app.kb import embedder, store
+from app.kb import context, embedder, store
 from app.kb import eval as kb_eval
 from app.tools.base import ToolResult, ToolSpec, obj_schema
 
@@ -38,12 +38,26 @@ async def search_kb(query: str, kb_ids: list[str] | None = None, top_k: int = 8)
     max_chunks = max(1, int(nacos.kb_param("max-chunks-in-context", settings.kb_max_chunks_in_context)))
     chunk_chars = max(50, int(nacos.kb_param("chunk-chars", settings.kb_chunk_chars)))
     selected = hits[:max_chunks]
-    lines = []
-    for idx, hit in enumerate(selected, start=1):
-        text = hit["text"].strip()[:chunk_chars]
-        lines.append(f"[{idx}] 《{hit['title']}》第{int(hit['seq']) + 1}块（相关度 {hit['score']:.2f}）\n{text}")
+    try:
+        blocks = context.expand_hits(selected)
+    except Exception as exc:  # noqa: BLE001 - 打包失败退回原始块，检索不受影响
+        logger.warning("知识库上下文打包失败：%s", exc)
+        blocks = context.raw_blocks(selected)
 
-    data: dict = {"chunks": selected, "query": query}
+    lines = []
+    for idx, block in enumerate(blocks, start=1):
+        text = str(block.get("text") or "").strip()
+        if not block.get("expanded"):
+            text = text[:chunk_chars]
+        start = int(block.get("seq_start") or 0) + 1
+        end = int(block.get("seq_end") or start - 1) + 1
+        where = f"第{start}块" if end <= start else f"第{start}–{end}块"
+        section = str(block.get("section") or "").strip()
+        title = str(block.get("title") or "")
+        prefix = f"《{title}》{section + ' ' if section else ''}{where}"
+        lines.append(f"[{idx}] {prefix}（相关度 {float(block.get('score') or 0.0):.2f}）\n{text}")
+
+    data: dict = {"chunks": selected, "blocks": blocks, "query": query}
     terms = kb_eval.query_terms(query)
     if terms and hits:
         threshold = kb_eval.relevance_threshold(len(terms))
